@@ -3,6 +3,7 @@ package controller
 import (
 	"fmt"
 	"net/http"
+	"strconv"
 	"strings"
 
 	"github.com/QuantumNous/new-api/common"
@@ -259,6 +260,32 @@ func UpdateOption(c *gin.Context) {
 				"message": err.Error(),
 			})
 			return
+		}
+	case "DefaultSubscriptionPlanId":
+		planId, parseErr := strconv.Atoi(strings.TrimSpace(option.Value.(string)))
+		if parseErr != nil || planId < 0 {
+			c.JSON(http.StatusOK, gin.H{
+				"success": false,
+				"message": "默认订阅套餐配置无效",
+			})
+			return
+		}
+		if planId > 0 {
+			plan, getErr := model.GetSubscriptionPlanById(planId)
+			if getErr != nil {
+				c.JSON(http.StatusOK, gin.H{
+					"success": false,
+					"message": "默认订阅套餐不存在",
+				})
+				return
+			}
+			if !plan.Enabled {
+				c.JSON(http.StatusOK, gin.H{
+					"success": false,
+					"message": "默认订阅套餐未启用",
+				})
+				return
+			}
 		}
 	case "console_setting.api_info":
 		err = console_setting.ValidateConsoleSettings(option.Value.(string), "ApiInfo")
