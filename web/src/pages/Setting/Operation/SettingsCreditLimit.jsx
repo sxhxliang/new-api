@@ -31,8 +31,13 @@ import {
 export default function SettingsCreditLimit(props) {
   const { t } = useTranslation();
   const [loading, setLoading] = useState(false);
+  const [plansLoading, setPlansLoading] = useState(false);
+  const [planOptions, setPlanOptions] = useState([
+    { label: t('不默认订阅'), value: '0' },
+  ]);
   const [inputs, setInputs] = useState({
     QuotaForNewUser: '',
+    DefaultSubscriptionPlanId: '0',
     PreConsumedQuota: '',
     QuotaForInviter: '',
     QuotaForInvitee: '',
@@ -76,6 +81,32 @@ export default function SettingsCreditLimit(props) {
       });
   }
 
+  const loadPlanOptions = async () => {
+    setPlansLoading(true);
+    try {
+      const res = await API.get('/api/subscription/admin/plans');
+      const { success, data, message } = res.data;
+      if (!success) {
+        showError(message);
+        return;
+      }
+      const nextPlanOptions = [{ label: t('不默认订阅'), value: '0' }];
+      (data || []).forEach((item) => {
+        const plan = item?.plan;
+        if (!plan?.id || !plan?.enabled) return;
+        nextPlanOptions.push({
+          label: `${plan.title} (#${plan.id})`,
+          value: String(plan.id),
+        });
+      });
+      setPlanOptions(nextPlanOptions);
+    } catch {
+      showError(t('加载订阅套餐失败'));
+    } finally {
+      setPlansLoading(false);
+    }
+  };
+
   useEffect(() => {
     const currentInputs = {};
     for (let key in props.options) {
@@ -87,6 +118,10 @@ export default function SettingsCreditLimit(props) {
     setInputsRow(structuredClone(currentInputs));
     refForm.current.setValues(currentInputs);
   }, [props.options]);
+
+  useEffect(() => {
+    loadPlanOptions();
+  }, []);
   return (
     <>
       <Spin spinning={loading}>
@@ -109,6 +144,23 @@ export default function SettingsCreditLimit(props) {
                     setInputs({
                       ...inputs,
                       QuotaForNewUser: String(value),
+                    })
+                  }
+                />
+              </Col>
+              <Col xs={24} sm={12} md={8} lg={8} xl={8}>
+                <Form.Select
+                  label={t('新用户默认订阅套餐')}
+                  field={'DefaultSubscriptionPlanId'}
+                  placeholder={t('请选择订阅套餐')}
+                  optionList={planOptions}
+                  loading={plansLoading}
+                  filter
+                  extraText={t('设置后，新注册用户将自动订阅该套餐')}
+                  onChange={(value) =>
+                    setInputs({
+                      ...inputs,
+                      DefaultSubscriptionPlanId: String(value || '0'),
                     })
                   }
                 />

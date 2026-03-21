@@ -650,6 +650,35 @@ func AdminBindSubscription(userId int, planId int, sourceNote string) (string, e
 	return "", nil
 }
 
+func AutoBindDefaultSubscriptionForNewUser(userId int) error {
+	if userId <= 0 {
+		return errors.New("invalid userId")
+	}
+	planId := common.DefaultSubscriptionPlanId
+	if planId <= 0 {
+		return nil
+	}
+	plan, err := GetSubscriptionPlanById(planId)
+	if err != nil {
+		return err
+	}
+	if !plan.Enabled {
+		return errors.New("default subscription plan is disabled")
+	}
+	err = DB.Transaction(func(tx *gorm.DB) error {
+		_, bindErr := CreateUserSubscriptionFromPlanTx(tx, userId, plan, "register")
+		return bindErr
+	})
+	if err != nil {
+		return err
+	}
+	if strings.TrimSpace(plan.UpgradeGroup) != "" {
+		_ = UpdateUserGroupCache(userId, plan.UpgradeGroup)
+	}
+	RecordLog(userId, LogTypeSystem, fmt.Sprintf("新用户默认订阅套餐: %s", plan.Title))
+	return nil
+}
+
 // GetAllActiveUserSubscriptions returns all active subscriptions for a user.
 func GetAllActiveUserSubscriptions(userId int) ([]SubscriptionSummary, error) {
 	if userId <= 0 {
