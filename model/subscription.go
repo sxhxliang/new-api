@@ -1435,6 +1435,18 @@ type SubscriptionRateLimitUsage struct {
 	SecondaryWindow *SubscriptionRateLimitWindow `json:"secondary_window,omitempty"`
 }
 
+type UserSubscriptionRateLimitUsage struct {
+	SubscriptionId int                         `json:"subscription_id"`
+	PlanId         int                         `json:"plan_id"`
+	PlanTitle      string                      `json:"plan_title"`
+	BillingMode    string                      `json:"billing_mode"`
+	StartTime      int64                       `json:"start_time"`
+	EndTime        int64                       `json:"end_time"`
+	LastResetTime  int64                       `json:"last_reset_time"`
+	NextResetTime  int64                       `json:"next_reset_time"`
+	RateLimit      *SubscriptionRateLimitUsage `json:"rate_limit,omitempty"`
+}
+
 func buildSubscriptionRateLimitWindow(limitAmount int64, usedAmount int64, limitWindowSeconds int64, resetAt int64, now int64) *SubscriptionRateLimitWindow {
 	if limitAmount <= 0 {
 		return nil
@@ -1527,6 +1539,55 @@ func buildSubscriptionRateLimitUsageTx(tx *gorm.DB, sub *UserSubscription, plan 
 	}, nil
 }
 
+func selectUserSubscriptionRateLimitUsageTx(tx *gorm.DB, userId int, now int64) (*UserSubscriptionRateLimitUsage, error) {
+	if userId <= 0 {
+		return nil, errors.New("invalid userId")
+	}
+	var subs []UserSubscription
+	if err := tx.Set("gorm:query_option", "FOR UPDATE").
+		Where("user_id = ? AND status = ? AND end_time > ?", userId, "active", now).
+		Order("end_time asc, id asc").
+		Find(&subs).Error; err != nil {
+		return nil, err
+	}
+	if len(subs) == 0 {
+		return nil, nil
+	}
+	var fallback *UserSubscriptionRateLimitUsage
+	for _, candidate := range subs {
+		sub := candidate
+		plan, err := getSubscriptionPlanByIdTx(tx, sub.PlanId)
+		if err != nil {
+			return nil, err
+		}
+		if err := maybeResetUserSubscriptionWithPlanTx(tx, &sub, plan, now); err != nil {
+			return nil, err
+		}
+		usage, err := buildSubscriptionRateLimitUsageTx(tx, &sub, plan, now)
+		if err != nil {
+			return nil, err
+		}
+		selected := &UserSubscriptionRateLimitUsage{
+			SubscriptionId: sub.Id,
+			PlanId:         sub.PlanId,
+			PlanTitle:      plan.Title,
+			BillingMode:    NormalizeSubscriptionBillingMode(plan.BillingMode),
+			StartTime:      sub.StartTime,
+			EndTime:        sub.EndTime,
+			LastResetTime:  sub.LastResetTime,
+			NextResetTime:  sub.NextResetTime,
+			RateLimit:      usage,
+		}
+		if fallback == nil {
+			fallback = selected
+		}
+		if usage != nil && usage.Allowed {
+			return selected, nil
+		}
+	}
+	return fallback, nil
+}
+
 func GetCodexSubscriptionRateLimitUsage(userId int) (*SubscriptionRateLimitUsage, error) {
 	if userId <= 0 {
 		return nil, errors.New("invalid userId")
@@ -1534,39 +1595,33 @@ func GetCodexSubscriptionRateLimitUsage(userId int) (*SubscriptionRateLimitUsage
 	now := GetDBTimestamp()
 	var result *SubscriptionRateLimitUsage
 	err := DB.Transaction(func(tx *gorm.DB) error {
-		var subs []UserSubscription
-		if err := tx.Set("gorm:query_option", "FOR UPDATE").
-			Where("user_id = ? AND status = ? AND end_time > ?", userId, "active", now).
-			Order("end_time asc, id asc").
-			Find(&subs).Error; err != nil {
+		selected, err := selectUserSubscriptionRateLimitUsageTx(tx, userId, now)
+		if err != nil {
 			return err
 		}
-		if len(subs) == 0 {
-			return nil
+		if selected != nil {
+			result = selected.RateLimit
 		}
-		var fallback *SubscriptionRateLimitUsage
-		for _, candidate := range subs {
-			sub := candidate
-			plan, err := getSubscriptionPlanByIdTx(tx, sub.PlanId)
-			if err != nil {
-				return err
-			}
-			if err := maybeResetUserSubscriptionWithPlanTx(tx, &sub, plan, now); err != nil {
-				return err
-			}
-			usage, err := buildSubscriptionRateLimitUsageTx(tx, &sub, plan, now)
-			if err != nil {
-				return err
-			}
-			if fallback == nil {
-				fallback = usage
-			}
-			if usage != nil && usage.Allowed {
-				result = usage
-				return nil
-			}
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return result, nil
+}
+
+func GetUserSubscriptionRateLimitUsage(userId int) (*UserSubscriptionRateLimitUsage, error) {
+	if userId <= 0 {
+		return nil, errors.New("invalid userId")
+	}
+	now := GetDBTimestamp()
+	var result *UserSubscriptionRateLimitUsage
+	err := DB.Transaction(func(tx *gorm.DB) error {
+		selected, err := selectUserSubscriptionRateLimitUsageTx(tx, userId, now)
+		if err != nil {
+			return err
 		}
-		result = fallback
+		result = selected
 		return nil
 	})
 	if err != nil {

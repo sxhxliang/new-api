@@ -69,6 +69,31 @@ function submitEpayForm({ url, params }) {
   document.body.removeChild(form);
 }
 
+function formatDurationFromSeconds(seconds, t) {
+  const value = Number(seconds || 0);
+  if (!Number.isFinite(value) || value <= 0) {
+    return t('即将');
+  }
+  if (value >= 86400) return `${Math.ceil(value / 86400)}${t('天')}`;
+  if (value >= 3600) return `${Math.ceil(value / 3600)}${t('小时')}`;
+  if (value >= 60) return `${Math.ceil(value / 60)}${t('分钟')}`;
+  return `${Math.ceil(value)}${t('秒')}`;
+}
+
+function formatWindowReset(window, t) {
+  if (!window) return t('未启用');
+  if (Number(window.reset_at || 0) > 0) {
+    return `${new Date(window.reset_at * 1000).toLocaleString()} · ${t('约')} ${formatDurationFromSeconds(window.reset_after_seconds, t)}`;
+  }
+  return t('等待首次使用后开始计时');
+}
+
+function formatWindowPercent(window) {
+  const percent = Number(window?.used_percent || 0);
+  if (!Number.isFinite(percent) || percent <= 0) return 0;
+  return Math.min(100, Math.round(percent));
+}
+
 const SubscriptionPlansCard = ({
   t,
   loading = false,
@@ -81,6 +106,7 @@ const SubscriptionPlansCard = ({
   onChangeBillingPreference,
   activeSubscriptions = [],
   allSubscriptions = [],
+  subscriptionUsage = null,
   reloadSubscriptionSelf,
   withCard = true,
 }) => {
@@ -232,6 +258,15 @@ const SubscriptionPlansCard = ({
     return map;
   }, [plans]);
 
+  const currentRateLimit = subscriptionUsage?.rate_limit || null;
+  const currentBillingMode = subscriptionUsage?.billing_mode || 'standard';
+  const usagePlanTitle =
+    subscriptionUsage?.plan_title ||
+    planTitleMap.get(subscriptionUsage?.plan_id) ||
+    '';
+  const currentPrimaryWindow = currentRateLimit?.primary_window || null;
+  const currentSecondaryWindow = currentRateLimit?.secondary_window || null;
+
   const getPlanPurchaseCount = (planId) =>
     planPurchaseCountMap.get(planId) || 0;
 
@@ -374,9 +409,107 @@ const SubscriptionPlansCard = ({
               </Text>
             )}
 
+            {(currentRateLimit || hasAnySubscription) && <Divider margin={8} />}
+
+            {currentRateLimit && (
+              <div
+                className='mb-3 rounded-xl p-3'
+                style={{
+                  background: 'var(--semi-color-fill-0)',
+                  border: '1px solid var(--semi-color-border)',
+                }}
+              >
+                <div className='flex items-center justify-between gap-2 mb-3'>
+                  <div className='flex items-center gap-2 min-w-0'>
+                    <Text strong>{t('当前订阅用量')}</Text>
+                    <Tag
+                      color='white'
+                      size='small'
+                      shape='circle'
+                      prefixIcon={
+                        <Badge
+                          dot
+                          type={
+                            currentRateLimit.allowed ? 'success' : 'danger'
+                          }
+                        />
+                      }
+                    >
+                      {currentRateLimit.allowed ? t('当前可用') : t('已触发限制')}
+                    </Tag>
+                  </div>
+                  <Text type='tertiary' size='small'>
+                    {usagePlanTitle
+                      ? `${usagePlanTitle} · #${subscriptionUsage?.subscription_id || ''}`
+                      : `${t('订阅')} #${subscriptionUsage?.subscription_id || ''}`}
+                  </Text>
+                </div>
+
+                <div
+                  className={`grid gap-3 ${
+                    currentBillingMode === 'sliding_window'
+                      ? 'grid-cols-1 md:grid-cols-2'
+                      : 'grid-cols-1'
+                  }`}
+                >
+                  {currentPrimaryWindow && (
+                    <div
+                      className='rounded-lg p-3'
+                      style={{ background: 'var(--semi-color-bg-0)' }}
+                    >
+                      <div className='flex items-center justify-between gap-2 mb-1'>
+                        <Text strong size='small'>
+                          {currentBillingMode === 'sliding_window'
+                            ? t('5小时滚动窗口')
+                            : t('当前额度周期')}
+                        </Text>
+                        <Text type='tertiary' size='small'>
+                          {formatWindowPercent(currentPrimaryWindow)}%
+                        </Text>
+                      </div>
+                      <div className='text-sm mb-1'>
+                        {renderQuota(currentPrimaryWindow.used_amount)} /{' '}
+                        {renderQuota(currentPrimaryWindow.limit_amount)}
+                      </div>
+                      <Text type='tertiary' size='small'>
+                        {currentBillingMode === 'sliding_window'
+                          ? t('最早释放')
+                          : t('下次重置')}
+                        ：{formatWindowReset(currentPrimaryWindow, t)}
+                      </Text>
+                    </div>
+                  )}
+
+                  {currentBillingMode === 'sliding_window' &&
+                    currentSecondaryWindow && (
+                      <div
+                        className='rounded-lg p-3'
+                        style={{ background: 'var(--semi-color-bg-0)' }}
+                      >
+                        <div className='flex items-center justify-between gap-2 mb-1'>
+                          <Text strong size='small'>
+                            {t('7天滚动周限额')}
+                          </Text>
+                          <Text type='tertiary' size='small'>
+                            {formatWindowPercent(currentSecondaryWindow)}%
+                          </Text>
+                        </div>
+                        <div className='text-sm mb-1'>
+                          {renderQuota(currentSecondaryWindow.used_amount)} /{' '}
+                          {renderQuota(currentSecondaryWindow.limit_amount)}
+                        </div>
+                        <Text type='tertiary' size='small'>
+                          {t('下次重置')}：
+                          {formatWindowReset(currentSecondaryWindow, t)}
+                        </Text>
+                      </div>
+                    )}
+                </div>
+              </div>
+            )}
+
             {hasAnySubscription ? (
               <>
-                <Divider margin={8} />
                 <div className='max-h-64 overflow-y-auto pr-1 semi-table-body'>
                   {allSubscriptions.map((sub, subIndex) => {
                     const isLast = subIndex === allSubscriptions.length - 1;

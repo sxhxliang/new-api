@@ -113,14 +113,21 @@ func GetCodexChannelUsage(c *gin.Context) {
 	}
 
 	ok := statusCode >= 200 && statusCode < 300
-	resp := gin.H{
-		"success":         ok,
-		"message":         "",
-		"upstream_status": statusCode,
-		"data":            payload,
+	if ok {
+		if payloadMap, isMap := payload.(map[string]any); isMap {
+			c.JSON(http.StatusOK, payloadMap)
+			return
+		}
+		if payloadSlice, isSlice := payload.([]any); isSlice {
+			c.JSON(http.StatusOK, payloadSlice)
+			return
+		}
 	}
-	if !ok {
-		resp["message"] = fmt.Sprintf("upstream status: %d", statusCode)
+
+	resp := gin.H{
+		"error":           fmt.Sprintf("upstream status: %d", statusCode),
+		"upstream_status": statusCode,
+		"payload":         payload,
 	}
 	c.JSON(http.StatusOK, resp)
 }

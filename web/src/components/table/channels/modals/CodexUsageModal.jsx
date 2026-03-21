@@ -181,13 +181,22 @@ const RateLimitWindowCard = ({ t, title, windowData }) => {
 
 const CodexUsageView = ({ t, record, payload, onCopy, onRefresh }) => {
   const tt = typeof t === 'function' ? t : (v) => v;
-  const data = payload?.data ?? null;
+  const hasWrappedPayload =
+    payload &&
+    typeof payload === 'object' &&
+    Object.prototype.hasOwnProperty.call(payload, 'data');
+  const data = hasWrappedPayload ? payload?.data ?? null : payload ?? null;
   const rateLimit = data?.rate_limit ?? {};
   const { fiveHourWindow, weeklyWindow } = resolveRateLimitWindows(data);
 
   const allowed = !!rateLimit?.allowed;
   const limitReached = !!rateLimit?.limit_reached;
-  const upstreamStatus = payload?.upstream_status;
+  const upstreamStatus =
+    payload && typeof payload === 'object'
+      ? payload?.upstream_status
+      : undefined;
+  const payloadError =
+    payload && typeof payload === 'object' ? payload?.error : undefined;
 
   const statusTag =
     allowed && !limitReached ? (
@@ -225,6 +234,11 @@ const CodexUsageView = ({ t, record, payload, onCopy, onRefresh }) => {
           {tt('上游状态码：')}
           {upstreamStatus ?? '-'}
         </Text>
+        {payloadError ? (
+          <Text type='danger' size='small'>
+            {String(payloadError)}
+          </Text>
+        ) : null}
       </div>
 
       <div className='grid grid-cols-1 gap-3 md:grid-cols-2'>

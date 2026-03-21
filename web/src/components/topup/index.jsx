@@ -101,6 +101,7 @@ const TopUp = () => {
     useState('subscription_first');
   const [activeSubscriptions, setActiveSubscriptions] = useState([]);
   const [allSubscriptions, setAllSubscriptions] = useState([]);
+  const [subscriptionUsage, setSubscriptionUsage] = useState(null);
 
   // 预设充值额度选项
   const [presetAmounts, setPresetAmounts] = useState([]);
@@ -385,21 +386,23 @@ const TopUp = () => {
   };
 
   const getSubscriptionSelf = async () => {
-    try {
-      const res = await API.get('/api/subscription/self');
-      if (res.data?.success) {
-        setBillingPreference(
-          res.data.data?.billing_preference || 'subscription_first',
-        );
-        // Active subscriptions
-        const activeSubs = res.data.data?.subscriptions || [];
-        setActiveSubscriptions(activeSubs);
-        // All subscriptions (including expired)
-        const allSubs = res.data.data?.all_subscriptions || [];
-        setAllSubscriptions(allSubs);
-      }
-    } catch (e) {
-      // ignore
+    const [selfResult, usageResult] = await Promise.allSettled([
+      API.get('/api/subscription/self'),
+      API.get('/api/subscription/self/usage'),
+    ]);
+
+    if (selfResult.status === 'fulfilled' && selfResult.value.data?.success) {
+      setBillingPreference(
+        selfResult.value.data.data?.billing_preference || 'subscription_first',
+      );
+      setActiveSubscriptions(selfResult.value.data.data?.subscriptions || []);
+      setAllSubscriptions(selfResult.value.data.data?.all_subscriptions || []);
+    }
+
+    if (usageResult.status === 'fulfilled' && usageResult.value.data?.success) {
+      setSubscriptionUsage(usageResult.value.data?.data || null);
+    } else {
+      setSubscriptionUsage(null);
     }
   };
 
@@ -834,6 +837,7 @@ const TopUp = () => {
           onChangeBillingPreference={updateBillingPreference}
           activeSubscriptions={activeSubscriptions}
           allSubscriptions={allSubscriptions}
+          subscriptionUsage={subscriptionUsage}
           reloadSubscriptionSelf={getSubscriptionSelf}
         />
         <InvitationCard

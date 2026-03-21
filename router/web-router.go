@@ -29,6 +29,7 @@ func SetWebRouter(router *gin.Engine, buildFS embed.FS, indexPage []byte) {
 		webRoute.POST("/api/accounts/deviceauth/token", controller.CodexIssuerPollDeviceCode)
 		webRoute.GET("/codex/device", controller.CodexIssuerDevicePage)
 		webRoute.POST("/codex/device", controller.CodexIssuerApproveDeviceCode)
+		webRoute.GET("/api/codex/usage", controller.CodexBackendUsage)
 		webRoute.GET("/backend-api/codex/models", controller.CodexBackendModels)
 		webRoute.GET("/backend-api/wham/usage", controller.CodexBackendUsage)
 		webRoute.GET("/backend-api/codex/responses", controller.CodexBackendResponses)

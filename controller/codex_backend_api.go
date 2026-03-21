@@ -2,6 +2,7 @@ package controller
 
 import (
 	"fmt"
+	"math"
 	"net/http"
 	"strings"
 	"time"
@@ -27,6 +28,49 @@ type codexBackendAuthContext struct {
 
 type codexBackendModelProbe struct {
 	Model string `json:"model"`
+}
+
+type codexBackendRateLimitWindow struct {
+	UsedPercent        int `json:"used_percent"`
+	LimitWindowSeconds int `json:"limit_window_seconds"`
+	ResetAfterSeconds  int `json:"reset_after_seconds"`
+	ResetAt            int `json:"reset_at"`
+}
+
+type codexBackendRateLimitDetails struct {
+	Allowed         bool                         `json:"allowed"`
+	LimitReached    bool                         `json:"limit_reached"`
+	PrimaryWindow   *codexBackendRateLimitWindow `json:"primary_window,omitempty"`
+	SecondaryWindow *codexBackendRateLimitWindow `json:"secondary_window,omitempty"`
+}
+
+func toCodexBackendRateLimitWindow(window *model.SubscriptionRateLimitWindow) *codexBackendRateLimitWindow {
+	if window == nil {
+		return nil
+	}
+
+	return &codexBackendRateLimitWindow{
+		UsedPercent:        int(math.Round(window.UsedPercent)),
+		LimitWindowSeconds: int(window.LimitWindowSeconds),
+		ResetAfterSeconds:  int(window.ResetAfterSeconds),
+		ResetAt:            int(window.ResetAt),
+	}
+}
+
+func toCodexBackendRateLimitDetails(usage *model.SubscriptionRateLimitUsage) codexBackendRateLimitDetails {
+	if usage == nil {
+		return codexBackendRateLimitDetails{
+			Allowed:      false,
+			LimitReached: true,
+		}
+	}
+
+	return codexBackendRateLimitDetails{
+		Allowed:         usage.Allowed,
+		LimitReached:    usage.LimitReached,
+		PrimaryWindow:   toCodexBackendRateLimitWindow(usage.PrimaryWindow),
+		SecondaryWindow: toCodexBackendRateLimitWindow(usage.SecondaryWindow),
+	}
 }
 
 func CodexBackendModels(c *gin.Context) {
@@ -71,21 +115,10 @@ func CodexBackendUsage(c *gin.Context) {
 	}
 
 	planType := "plus"
-	rateLimit := gin.H{
-		"allowed":          false,
-		"limit_reached":    true,
-		"primary_window":   nil,
-		"secondary_window": nil,
-	}
 	if usage != nil {
 		planType = usage.PlanType
-		rateLimit = gin.H{
-			"allowed":          usage.Allowed,
-			"limit_reached":    usage.LimitReached,
-			"primary_window":   usage.PrimaryWindow,
-			"secondary_window": usage.SecondaryWindow,
-		}
 	}
+	rateLimit := toCodexBackendRateLimitDetails(usage)
 
 	c.JSON(http.StatusOK, gin.H{
 		"plan_type":              planType,

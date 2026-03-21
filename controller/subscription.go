@@ -62,6 +62,16 @@ func GetSubscriptionSelf(c *gin.Context) {
 	})
 }
 
+func GetSubscriptionSelfUsage(c *gin.Context) {
+	userId := c.GetInt("id")
+	usage, err := model.GetUserSubscriptionRateLimitUsage(userId)
+	if err != nil {
+		common.ApiError(c, err)
+		return
+	}
+	common.ApiSuccess(c, usage)
+}
+
 func UpdateSubscriptionPreference(c *gin.Context) {
 	userId := c.GetInt("id")
 	var req BillingPreferenceRequest

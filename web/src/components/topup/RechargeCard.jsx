@@ -96,6 +96,7 @@ const RechargeCard = ({
   onChangeBillingPreference,
   activeSubscriptions = [],
   allSubscriptions = [],
+  subscriptionUsage = null,
   reloadSubscriptionSelf,
 }) => {
   const onlineFormApiRef = useRef(null);
@@ -665,6 +666,7 @@ const RechargeCard = ({
                 onChangeBillingPreference={onChangeBillingPreference}
                 activeSubscriptions={activeSubscriptions}
                 allSubscriptions={allSubscriptions}
+                subscriptionUsage={subscriptionUsage}
                 reloadSubscriptionSelf={reloadSubscriptionSelf}
                 withCard={false}
               />
