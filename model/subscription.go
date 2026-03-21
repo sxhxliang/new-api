@@ -32,10 +32,23 @@ const (
 	SubscriptionResetCustom  = "custom"
 )
 
+// Subscription billing mode
+const (
+	SubscriptionBillingModeStandard      = "standard"
+	SubscriptionBillingModeSlidingWindow = "sliding_window"
+)
+
+const (
+	SubscriptionPrimaryRollingWindowSeconds   int64 = 5 * 60 * 60
+	SubscriptionSecondaryRollingWindowSeconds int64 = 7 * 24 * 60 * 60
+)
+
 var (
 	ErrSubscriptionOrderNotFound      = errors.New("subscription order not found")
 	ErrSubscriptionOrderStatusInvalid = errors.New("subscription order status invalid")
 )
+
+const subscriptionSQLiteBusyRetryMaxAttempts = 4
 
 const (
 	subscriptionPlanCacheNamespace     = "new-api:subscription_plan:v1"
@@ -80,6 +93,30 @@ func subscriptionPlanInfoCacheCapacity() int {
 		capacity = 10000
 	}
 	return capacity
+}
+
+func isSQLiteBusyError(err error) bool {
+	if err == nil || !common.UsingSQLite {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "database is locked") || strings.Contains(msg, "sqlite_busy")
+}
+
+func withSubscriptionTxRetry(fn func() error) error {
+	if fn == nil {
+		return nil
+	}
+	var lastErr error
+	for i := 0; i < subscriptionSQLiteBusyRetryMaxAttempts; i++ {
+		err := fn()
+		if !isSQLiteBusyError(err) {
+			return err
+		}
+		lastErr = err
+		time.Sleep(time.Duration(50*(i+1)) * time.Millisecond)
+	}
+	return lastErr
 }
 
 func getSubscriptionPlanCache() *cachex.HybridCache[SubscriptionPlan] {
@@ -170,6 +207,11 @@ type SubscriptionPlan struct {
 
 	// Total quota (amount in quota units, 0 = unlimited)
 	TotalAmount int64 `json:"total_amount" gorm:"type:bigint;not null;default:0"`
+
+	// Billing mode: standard or sliding_window.
+	BillingMode string `json:"billing_mode" gorm:"type:varchar(32);not null;default:'standard'"`
+	// Primary rolling-window quota used by sliding_window mode.
+	PrimaryWindowAmount int64 `json:"primary_window_amount" gorm:"type:bigint;not null;default:0"`
 
 	// Quota reset period for plan
 	QuotaResetPeriod        string `json:"quota_reset_period" gorm:"type:varchar(16);default:'never'"`
@@ -303,6 +345,19 @@ func NormalizeResetPeriod(period string) string {
 	default:
 		return SubscriptionResetNever
 	}
+}
+
+func NormalizeSubscriptionBillingMode(mode string) string {
+	switch strings.TrimSpace(mode) {
+	case SubscriptionBillingModeSlidingWindow:
+		return SubscriptionBillingModeSlidingWindow
+	default:
+		return SubscriptionBillingModeStandard
+	}
+}
+
+func isSlidingWindowBillingPlan(plan *SubscriptionPlan) bool {
+	return plan != nil && NormalizeSubscriptionBillingMode(plan.BillingMode) == SubscriptionBillingModeSlidingWindow
 }
 
 func calcNextResetTime(base time.Time, plan *SubscriptionPlan, endUnix int64) int64 {
@@ -461,11 +516,13 @@ func CreateUserSubscriptionFromPlanTx(tx *gorm.DB, userId int, plan *Subscriptio
 	if err != nil {
 		return nil, err
 	}
-	resetBase := now
-	nextReset := calcNextResetTime(resetBase, plan, endUnix)
 	lastReset := int64(0)
-	if nextReset > 0 {
-		lastReset = now.Unix()
+	nextReset := int64(0)
+	if !isSlidingWindowBillingPlan(plan) {
+		nextReset = calcNextResetTime(now, plan, endUnix)
+		if nextReset > 0 {
+			lastReset = now.Unix()
+		}
 	}
 	upgradeGroup := strings.TrimSpace(plan.UpgradeGroup)
 	prevGroup := ""
@@ -916,9 +973,79 @@ func (r *SubscriptionPreConsumeRecord) BeforeUpdate(tx *gorm.DB) error {
 	return nil
 }
 
+type SubscriptionUsageEvent struct {
+	Id                 int    `json:"id"`
+	RequestId          string `json:"request_id" gorm:"type:varchar(64);index"`
+	UserId             int    `json:"user_id" gorm:"index"`
+	UserSubscriptionId int    `json:"user_subscription_id" gorm:"index"`
+	Delta              int64  `json:"delta" gorm:"type:bigint;not null;default:0"`
+	EventType          string `json:"event_type" gorm:"type:varchar(32);index"`
+	CreatedAt          int64  `json:"created_at" gorm:"bigint;index"`
+}
+
+func (e *SubscriptionUsageEvent) BeforeCreate(tx *gorm.DB) error {
+	if e.CreatedAt <= 0 {
+		e.CreatedAt = common.GetTimestamp()
+	}
+	return nil
+}
+
+func calcSlidingWindowNextResetTime(base time.Time, endUnix int64) int64 {
+	next := base.Add(time.Duration(SubscriptionSecondaryRollingWindowSeconds) * time.Second)
+	if endUnix > 0 && next.Unix() > endUnix {
+		return 0
+	}
+	return next.Unix()
+}
+
+func maybeResetSlidingWindowUserSubscriptionTx(tx *gorm.DB, sub *UserSubscription, now int64) error {
+	if tx == nil || sub == nil {
+		return errors.New("invalid sliding window reset args")
+	}
+	if sub.LastResetTime <= 0 || sub.NextResetTime <= 0 {
+		return nil
+	}
+	if sub.NextResetTime > now {
+		return nil
+	}
+	base := time.Unix(sub.LastResetTime, 0)
+	next := sub.NextResetTime
+	advanced := false
+	for next > 0 && next <= now {
+		advanced = true
+		base = time.Unix(next, 0)
+		next = calcSlidingWindowNextResetTime(base, sub.EndTime)
+	}
+	if !advanced {
+		return nil
+	}
+	sub.AmountUsed = 0
+	sub.LastResetTime = base.Unix()
+	sub.NextResetTime = next
+	return tx.Save(sub).Error
+}
+
+func ensureSlidingWindowUsageCycleTx(tx *gorm.DB, sub *UserSubscription, now int64) error {
+	if tx == nil || sub == nil {
+		return errors.New("invalid sliding window cycle args")
+	}
+	if sub.LastResetTime > 0 {
+		if sub.NextResetTime <= 0 {
+			return nil
+		}
+		return maybeResetSlidingWindowUserSubscriptionTx(tx, sub, now)
+	}
+	sub.LastResetTime = now
+	sub.NextResetTime = calcSlidingWindowNextResetTime(time.Unix(now, 0), sub.EndTime)
+	return tx.Save(sub).Error
+}
+
 func maybeResetUserSubscriptionWithPlanTx(tx *gorm.DB, sub *UserSubscription, plan *SubscriptionPlan, now int64) error {
 	if tx == nil || sub == nil || plan == nil {
 		return errors.New("invalid reset args")
+	}
+	if isSlidingWindowBillingPlan(plan) {
+		return maybeResetSlidingWindowUserSubscriptionTx(tx, sub, now)
 	}
 	if sub.NextResetTime > 0 && sub.NextResetTime > now {
 		return nil
@@ -952,6 +1079,45 @@ func maybeResetUserSubscriptionWithPlanTx(tx *gorm.DB, sub *UserSubscription, pl
 	return tx.Save(sub).Error
 }
 
+func getSubscriptionUsageWindowTx(tx *gorm.DB, userSubscriptionId int, windowSeconds int64, now int64) (int64, int64, error) {
+	if tx == nil {
+		tx = DB
+	}
+	if userSubscriptionId <= 0 || windowSeconds <= 0 {
+		return 0, 0, nil
+	}
+	cutoff := now - windowSeconds
+	var summary struct {
+		Used     int64 `gorm:"column:used"`
+		OldestAt int64 `gorm:"column:oldest_at"`
+	}
+	if err := tx.Model(&SubscriptionUsageEvent{}).
+		Select("COALESCE(SUM(delta), 0) AS used, COALESCE(MIN(created_at), 0) AS oldest_at").
+		Where("user_subscription_id = ? AND created_at >= ?", userSubscriptionId, cutoff).
+		Scan(&summary).Error; err != nil {
+		return 0, 0, err
+	}
+	if summary.Used < 0 {
+		summary.Used = 0
+	}
+	return summary.Used, summary.OldestAt, nil
+}
+
+func recordSubscriptionUsageEventTx(tx *gorm.DB, sub *UserSubscription, requestId string, delta int64, eventType string, now int64) error {
+	if tx == nil || sub == nil || delta == 0 {
+		return nil
+	}
+	event := &SubscriptionUsageEvent{
+		RequestId:          strings.TrimSpace(requestId),
+		UserId:             sub.UserId,
+		UserSubscriptionId: sub.Id,
+		Delta:              delta,
+		EventType:          strings.TrimSpace(eventType),
+		CreatedAt:          now,
+	}
+	return tx.Create(event).Error
+}
+
 // PreConsumeUserSubscription pre-consumes from any active subscription total quota.
 func PreConsumeUserSubscription(requestId string, userId int, modelName string, quotaType int, amount int64) (*SubscriptionPreConsumeResult, error) {
 	if userId <= 0 {
@@ -967,88 +1133,116 @@ func PreConsumeUserSubscription(requestId string, userId int, modelName string, 
 
 	returnValue := &SubscriptionPreConsumeResult{}
 
-	err := DB.Transaction(func(tx *gorm.DB) error {
-		var existing SubscriptionPreConsumeRecord
-		query := tx.Where("request_id = ?", requestId).Limit(1).Find(&existing)
-		if query.Error != nil {
-			return query.Error
-		}
-		if query.RowsAffected > 0 {
-			if existing.Status == "refunded" {
-				return errors.New("subscription pre-consume already refunded")
+	err := withSubscriptionTxRetry(func() error {
+		return DB.Transaction(func(tx *gorm.DB) error {
+			var existing SubscriptionPreConsumeRecord
+			query := tx.Where("request_id = ?", requestId).Limit(1).Find(&existing)
+			if query.Error != nil {
+				return query.Error
 			}
-			var sub UserSubscription
-			if err := tx.Where("id = ?", existing.UserSubscriptionId).First(&sub).Error; err != nil {
-				return err
+			if query.RowsAffected > 0 {
+				if existing.Status == "refunded" {
+					return errors.New("subscription pre-consume already refunded")
+				}
+				var sub UserSubscription
+				if err := tx.Where("id = ?", existing.UserSubscriptionId).First(&sub).Error; err != nil {
+					return err
+				}
+				returnValue.UserSubscriptionId = sub.Id
+				returnValue.PreConsumed = existing.PreConsumed
+				returnValue.AmountTotal = sub.AmountTotal
+				returnValue.AmountUsedBefore = sub.AmountUsed
+				returnValue.AmountUsedAfter = sub.AmountUsed
+				return nil
 			}
-			returnValue.UserSubscriptionId = sub.Id
-			returnValue.PreConsumed = existing.PreConsumed
-			returnValue.AmountTotal = sub.AmountTotal
-			returnValue.AmountUsedBefore = sub.AmountUsed
-			returnValue.AmountUsedAfter = sub.AmountUsed
-			return nil
-		}
 
-		var subs []UserSubscription
-		if err := tx.Set("gorm:query_option", "FOR UPDATE").
-			Where("user_id = ? AND status = ? AND end_time > ?", userId, "active", now).
-			Order("end_time asc, id asc").
-			Find(&subs).Error; err != nil {
-			return errors.New("no active subscription")
-		}
-		if len(subs) == 0 {
-			return errors.New("no active subscription")
-		}
-		for _, candidate := range subs {
-			sub := candidate
-			plan, err := getSubscriptionPlanByIdTx(tx, sub.PlanId)
-			if err != nil {
-				return err
+			var subs []UserSubscription
+			if err := tx.Set("gorm:query_option", "FOR UPDATE").
+				Where("user_id = ? AND status = ? AND end_time > ?", userId, "active", now).
+				Order("end_time asc, id asc").
+				Find(&subs).Error; err != nil {
+				return errors.New("no active subscription")
 			}
-			if err := maybeResetUserSubscriptionWithPlanTx(tx, &sub, plan, now); err != nil {
-				return err
+			if len(subs) == 0 {
+				return errors.New("no active subscription")
 			}
-			usedBefore := sub.AmountUsed
-			if sub.AmountTotal > 0 {
-				remain := sub.AmountTotal - usedBefore
-				if remain < amount {
-					continue
+			for _, candidate := range subs {
+				sub := candidate
+				plan, err := getSubscriptionPlanByIdTx(tx, sub.PlanId)
+				if err != nil {
+					return err
 				}
-			}
-			record := &SubscriptionPreConsumeRecord{
-				RequestId:          requestId,
-				UserId:             userId,
-				UserSubscriptionId: sub.Id,
-				PreConsumed:        amount,
-				Status:             "consumed",
-			}
-			if err := tx.Create(record).Error; err != nil {
-				var dup SubscriptionPreConsumeRecord
-				if err2 := tx.Where("request_id = ?", requestId).First(&dup).Error; err2 == nil {
-					if dup.Status == "refunded" {
-						return errors.New("subscription pre-consume already refunded")
+				if err := maybeResetUserSubscriptionWithPlanTx(tx, &sub, plan, now); err != nil {
+					return err
+				}
+				if isSlidingWindowBillingPlan(plan) {
+					if err := ensureSlidingWindowUsageCycleTx(tx, &sub, now); err != nil {
+						return err
 					}
-					returnValue.UserSubscriptionId = sub.Id
-					returnValue.PreConsumed = dup.PreConsumed
-					returnValue.AmountTotal = sub.AmountTotal
-					returnValue.AmountUsedBefore = sub.AmountUsed
-					returnValue.AmountUsedAfter = sub.AmountUsed
-					return nil
 				}
-				return err
+				usedBefore := sub.AmountUsed
+				if isSlidingWindowBillingPlan(plan) {
+					primaryUsed, _, err := getSubscriptionUsageWindowTx(tx, sub.Id, SubscriptionPrimaryRollingWindowSeconds, now)
+					if err != nil {
+						return err
+					}
+					if plan.PrimaryWindowAmount > 0 && primaryUsed+amount > plan.PrimaryWindowAmount {
+						continue
+					}
+					if sub.AmountTotal > 0 {
+						remain := sub.AmountTotal - usedBefore
+						if remain < amount {
+							continue
+						}
+					}
+				} else {
+					if sub.AmountTotal > 0 {
+						remain := sub.AmountTotal - usedBefore
+						if remain < amount {
+							continue
+						}
+					}
+				}
+				record := &SubscriptionPreConsumeRecord{
+					RequestId:          requestId,
+					UserId:             userId,
+					UserSubscriptionId: sub.Id,
+					PreConsumed:        amount,
+					Status:             "consumed",
+				}
+				if err := tx.Create(record).Error; err != nil {
+					var dup SubscriptionPreConsumeRecord
+					if err2 := tx.Where("request_id = ?", requestId).First(&dup).Error; err2 == nil {
+						if dup.Status == "refunded" {
+							return errors.New("subscription pre-consume already refunded")
+						}
+						returnValue.UserSubscriptionId = sub.Id
+						returnValue.PreConsumed = dup.PreConsumed
+						returnValue.AmountTotal = sub.AmountTotal
+						returnValue.AmountUsedBefore = sub.AmountUsed
+						returnValue.AmountUsedAfter = sub.AmountUsed
+						return nil
+					}
+					return err
+				}
+				sub.AmountUsed += amount
+				if err := tx.Save(&sub).Error; err != nil {
+					return err
+				}
+				if isSlidingWindowBillingPlan(plan) {
+					if err := recordSubscriptionUsageEventTx(tx, &sub, requestId, amount, "preconsume", now); err != nil {
+						return err
+					}
+				}
+				returnValue.UserSubscriptionId = sub.Id
+				returnValue.PreConsumed = amount
+				returnValue.AmountTotal = sub.AmountTotal
+				returnValue.AmountUsedBefore = usedBefore
+				returnValue.AmountUsedAfter = sub.AmountUsed
+				return nil
 			}
-			sub.AmountUsed += amount
-			if err := tx.Save(&sub).Error; err != nil {
-				return err
-			}
-			returnValue.UserSubscriptionId = sub.Id
-			returnValue.PreConsumed = amount
-			returnValue.AmountTotal = sub.AmountTotal
-			returnValue.AmountUsedBefore = usedBefore
-			returnValue.AmountUsedAfter = sub.AmountUsed
-			return nil
-		}
-		return fmt.Errorf("subscription quota insufficient, need=%d", amount)
+			return fmt.Errorf("subscription quota insufficient, need=%d", amount)
+		})
 	})
 	if err != nil {
 		return nil, err
@@ -1061,24 +1255,27 @@ func RefundSubscriptionPreConsume(requestId string) error {
 	if strings.TrimSpace(requestId) == "" {
 		return errors.New("requestId is empty")
 	}
-	return DB.Transaction(func(tx *gorm.DB) error {
-		var record SubscriptionPreConsumeRecord
-		if err := tx.Set("gorm:query_option", "FOR UPDATE").
-			Where("request_id = ?", requestId).First(&record).Error; err != nil {
-			return err
-		}
-		if record.Status == "refunded" {
-			return nil
-		}
-		if record.PreConsumed <= 0 {
+	return withSubscriptionTxRetry(func() error {
+		return DB.Transaction(func(tx *gorm.DB) error {
+			now := GetDBTimestamp()
+			var record SubscriptionPreConsumeRecord
+			if err := tx.Set("gorm:query_option", "FOR UPDATE").
+				Where("request_id = ?", requestId).First(&record).Error; err != nil {
+				return err
+			}
+			if record.Status == "refunded" {
+				return nil
+			}
+			if record.PreConsumed <= 0 {
+				record.Status = "refunded"
+				return tx.Save(&record).Error
+			}
+			if err := postConsumeUserSubscriptionDeltaTx(tx, record.UserSubscriptionId, -record.PreConsumed, "refund", record.RequestId, now); err != nil {
+				return err
+			}
 			record.Status = "refunded"
 			return tx.Save(&record).Error
-		}
-		if err := PostConsumeUserSubscriptionDelta(record.UserSubscriptionId, -record.PreConsumed); err != nil {
-			return err
-		}
-		record.Status = "refunded"
-		return tx.Save(&record).Error
+		})
 	})
 }
 
@@ -1135,6 +1332,15 @@ func CleanupSubscriptionPreConsumeRecords(olderThanSeconds int64) (int64, error)
 	return res.RowsAffected, res.Error
 }
 
+func CleanupSubscriptionUsageEvents(olderThanSeconds int64) (int64, error) {
+	if olderThanSeconds <= 0 {
+		olderThanSeconds = 30 * 24 * 3600
+	}
+	cutoff := GetDBTimestamp() - olderThanSeconds
+	res := DB.Where("created_at < ?", cutoff).Delete(&SubscriptionUsageEvent{})
+	return res.RowsAffected, res.Error
+}
+
 type SubscriptionPlanInfo struct {
 	PlanId    int
 	PlanTitle string
@@ -1172,21 +1378,199 @@ func PostConsumeUserSubscriptionDelta(userSubscriptionId int, delta int64) error
 	if delta == 0 {
 		return nil
 	}
-	return DB.Transaction(func(tx *gorm.DB) error {
-		var sub UserSubscription
-		if err := tx.Set("gorm:query_option", "FOR UPDATE").
-			Where("id = ?", userSubscriptionId).
-			First(&sub).Error; err != nil {
+	return withSubscriptionTxRetry(func() error {
+		return DB.Transaction(func(tx *gorm.DB) error {
+			return postConsumeUserSubscriptionDeltaTx(tx, userSubscriptionId, delta, "settle", "", GetDBTimestamp())
+		})
+	})
+}
+
+func postConsumeUserSubscriptionDeltaTx(tx *gorm.DB, userSubscriptionId int, delta int64, eventType string, requestId string, now int64) error {
+	var sub UserSubscription
+	if err := tx.Set("gorm:query_option", "FOR UPDATE").
+		Where("id = ?", userSubscriptionId).
+		First(&sub).Error; err != nil {
+		return err
+	}
+	plan, err := getSubscriptionPlanByIdTx(tx, sub.PlanId)
+	if err != nil {
+		return err
+	}
+	if err := maybeResetUserSubscriptionWithPlanTx(tx, &sub, plan, now); err != nil {
+		return err
+	}
+	newUsed := sub.AmountUsed + delta
+	if newUsed < 0 {
+		newUsed = 0
+	}
+	if sub.AmountTotal > 0 && newUsed > sub.AmountTotal {
+		return fmt.Errorf("subscription used exceeds total, used=%d total=%d", newUsed, sub.AmountTotal)
+	}
+	sub.AmountUsed = newUsed
+	if err := tx.Save(&sub).Error; err != nil {
+		return err
+	}
+	if isSlidingWindowBillingPlan(plan) {
+		if err := recordSubscriptionUsageEventTx(tx, &sub, requestId, delta, eventType, now); err != nil {
 			return err
 		}
-		newUsed := sub.AmountUsed + delta
-		if newUsed < 0 {
-			newUsed = 0
+	}
+	return nil
+}
+
+type SubscriptionRateLimitWindow struct {
+	UsedAmount         int64   `json:"used_amount"`
+	LimitAmount        int64   `json:"limit_amount"`
+	UsedPercent        float64 `json:"used_percent"`
+	LimitWindowSeconds int64   `json:"limit_window_seconds"`
+	ResetAfterSeconds  int64   `json:"reset_after_seconds"`
+	ResetAt            int64   `json:"reset_at"`
+}
+
+type SubscriptionRateLimitUsage struct {
+	PlanType        string                       `json:"plan_type"`
+	Allowed         bool                         `json:"allowed"`
+	LimitReached    bool                         `json:"limit_reached"`
+	PrimaryWindow   *SubscriptionRateLimitWindow `json:"primary_window,omitempty"`
+	SecondaryWindow *SubscriptionRateLimitWindow `json:"secondary_window,omitempty"`
+}
+
+func buildSubscriptionRateLimitWindow(limitAmount int64, usedAmount int64, limitWindowSeconds int64, resetAt int64, now int64) *SubscriptionRateLimitWindow {
+	if limitAmount <= 0 {
+		return nil
+	}
+	if usedAmount < 0 {
+		usedAmount = 0
+	}
+	resetAfter := int64(0)
+	if resetAt > now {
+		resetAfter = resetAt - now
+	}
+	usedPercent := 0.0
+	if limitAmount > 0 {
+		usedPercent = (float64(usedAmount) * 100) / float64(limitAmount)
+	}
+	return &SubscriptionRateLimitWindow{
+		UsedAmount:         usedAmount,
+		LimitAmount:        limitAmount,
+		UsedPercent:        usedPercent,
+		LimitWindowSeconds: limitWindowSeconds,
+		ResetAfterSeconds:  resetAfter,
+		ResetAt:            resetAt,
+	}
+}
+
+func resolveStandardPlanWindowSeconds(plan *SubscriptionPlan) int64 {
+	if plan == nil {
+		return 0
+	}
+	switch NormalizeResetPeriod(plan.QuotaResetPeriod) {
+	case SubscriptionResetDaily:
+		return 24 * 60 * 60
+	case SubscriptionResetWeekly:
+		return 7 * 24 * 60 * 60
+	case SubscriptionResetMonthly:
+		return 30 * 24 * 60 * 60
+	case SubscriptionResetCustom:
+		if plan.QuotaResetCustomSeconds > 0 {
+			return plan.QuotaResetCustomSeconds
 		}
-		if sub.AmountTotal > 0 && newUsed > sub.AmountTotal {
-			return fmt.Errorf("subscription used exceeds total, used=%d total=%d", newUsed, sub.AmountTotal)
+	}
+	return 0
+}
+
+func buildSubscriptionRateLimitUsageTx(tx *gorm.DB, sub *UserSubscription, plan *SubscriptionPlan, now int64) (*SubscriptionRateLimitUsage, error) {
+	if sub == nil || plan == nil {
+		return nil, errors.New("invalid subscription rate limit args")
+	}
+	if isSlidingWindowBillingPlan(plan) {
+		primaryUsed, oldestAt, err := getSubscriptionUsageWindowTx(tx, sub.Id, SubscriptionPrimaryRollingWindowSeconds, now)
+		if err != nil {
+			return nil, err
 		}
-		sub.AmountUsed = newUsed
-		return tx.Save(&sub).Error
+		primaryResetAt := int64(0)
+		if oldestAt > 0 {
+			primaryResetAt = oldestAt + SubscriptionPrimaryRollingWindowSeconds
+		}
+		primary := buildSubscriptionRateLimitWindow(plan.PrimaryWindowAmount, primaryUsed, SubscriptionPrimaryRollingWindowSeconds, primaryResetAt, now)
+		secondary := buildSubscriptionRateLimitWindow(sub.AmountTotal, sub.AmountUsed, SubscriptionSecondaryRollingWindowSeconds, sub.NextResetTime, now)
+		allowed := true
+		if plan.PrimaryWindowAmount > 0 && primaryUsed >= plan.PrimaryWindowAmount {
+			allowed = false
+		}
+		if sub.AmountTotal > 0 && sub.AmountUsed >= sub.AmountTotal {
+			allowed = false
+		}
+		return &SubscriptionRateLimitUsage{
+			PlanType:        "plus",
+			Allowed:         allowed,
+			LimitReached:    !allowed,
+			PrimaryWindow:   primary,
+			SecondaryWindow: secondary,
+		}, nil
+	}
+	resetAt := sub.NextResetTime
+	if resetAt <= 0 {
+		resetAt = sub.EndTime
+	}
+	primary := buildSubscriptionRateLimitWindow(sub.AmountTotal, sub.AmountUsed, resolveStandardPlanWindowSeconds(plan), resetAt, now)
+	allowed := true
+	if sub.AmountTotal > 0 && sub.AmountUsed >= sub.AmountTotal {
+		allowed = false
+	}
+	return &SubscriptionRateLimitUsage{
+		PlanType:        "plus",
+		Allowed:         allowed,
+		LimitReached:    !allowed,
+		PrimaryWindow:   primary,
+		SecondaryWindow: nil,
+	}, nil
+}
+
+func GetCodexSubscriptionRateLimitUsage(userId int) (*SubscriptionRateLimitUsage, error) {
+	if userId <= 0 {
+		return nil, errors.New("invalid userId")
+	}
+	now := GetDBTimestamp()
+	var result *SubscriptionRateLimitUsage
+	err := DB.Transaction(func(tx *gorm.DB) error {
+		var subs []UserSubscription
+		if err := tx.Set("gorm:query_option", "FOR UPDATE").
+			Where("user_id = ? AND status = ? AND end_time > ?", userId, "active", now).
+			Order("end_time asc, id asc").
+			Find(&subs).Error; err != nil {
+			return err
+		}
+		if len(subs) == 0 {
+			return nil
+		}
+		var fallback *SubscriptionRateLimitUsage
+		for _, candidate := range subs {
+			sub := candidate
+			plan, err := getSubscriptionPlanByIdTx(tx, sub.PlanId)
+			if err != nil {
+				return err
+			}
+			if err := maybeResetUserSubscriptionWithPlanTx(tx, &sub, plan, now); err != nil {
+				return err
+			}
+			usage, err := buildSubscriptionRateLimitUsageTx(tx, &sub, plan, now)
+			if err != nil {
+				return err
+			}
+			if fallback == nil {
+				fallback = usage
+			}
+			if usage != nil && usage.Allowed {
+				result = usage
+				return nil
+			}
+		}
+		result = fallback
+		return nil
 	})
+	if err != nil {
+		return nil, err
+	}
+	return result, nil
 }

@@ -73,6 +73,21 @@ const renderStatus = (status, record, t) => {
   );
 };
 
+const renderRedemptionContent = (record, t) => {
+  if ((record?.redemption_type || 'quota') === 'subscription') {
+    return (
+      <Tag color='blue' shape='circle'>
+        {record?.subscription_plan_title || t('订阅套餐')}
+      </Tag>
+    );
+  }
+  return (
+    <Tag color='grey' shape='circle'>
+      {renderQuota(parseInt(record?.quota || 0, 10))}
+    </Tag>
+  );
+};
+
 /**
  * Get redemption code table column definitions
  */
@@ -105,16 +120,10 @@ export const getRedemptionsColumns = ({
       },
     },
     {
-      title: t('额度'),
+      title: t('兑换内容'),
       dataIndex: 'quota',
-      render: (text) => {
-        return (
-          <div>
-            <Tag color='grey' shape='circle'>
-              {renderQuota(parseInt(text))}
-            </Tag>
-          </div>
-        );
+      render: (text, record) => {
+        return <div>{renderRedemptionContent(record, t)}</div>;
       },
     },
     {

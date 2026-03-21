@@ -8,6 +8,7 @@ import (
 	"github.com/QuantumNous/new-api/constant"
 	"github.com/andybalholm/brotli"
 	"github.com/gin-gonic/gin"
+	"github.com/klauspost/compress/zstd"
 )
 
 type readCloser struct {
@@ -52,6 +53,21 @@ func DecompressRequestMiddleware() gin.HandlerFunc {
 				Reader: gzipReader,
 				closeFn: func() error {
 					_ = gzipReader.Close()
+					return origBody.Close()
+				},
+			})
+			c.Request.Header.Del("Content-Encoding")
+		case "zstd":
+			zstdReader, err := zstd.NewReader(origBody)
+			if err != nil {
+				_ = origBody.Close()
+				c.AbortWithStatus(http.StatusBadRequest)
+				return
+			}
+			c.Request.Body = wrapMaxBytes(&readCloser{
+				Reader: zstdReader,
+				closeFn: func() error {
+					zstdReader.Close()
 					return origBody.Close()
 				},
 			})

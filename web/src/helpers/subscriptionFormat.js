@@ -18,6 +18,9 @@ export function formatSubscriptionDuration(plan, t) {
 }
 
 export function formatSubscriptionResetPeriod(plan, t) {
+  if ((plan?.billing_mode || 'standard') === 'sliding_window') {
+    return `${t('5小时滚动窗口')} / ${t('7天滚动周限额')}`;
+  }
   const period = plan?.quota_reset_period || 'never';
   if (period === 'never') return t('不重置');
   if (period === 'daily') return t('每天');

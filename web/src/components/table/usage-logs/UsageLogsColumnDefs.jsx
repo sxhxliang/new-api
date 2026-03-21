@@ -222,6 +222,24 @@ function renderBillingTag(record, t) {
   return null;
 }
 
+function resolveUsageLogTokenLabel(record) {
+  const text = typeof record?.token_name === 'string' ? record.token_name.trim() : '';
+  if (text !== '') {
+    return text;
+  }
+  const other = getLogOther(record?.other);
+  if (other?.billing_source === 'subscription') {
+    const planTitle = String(other?.subscription_plan_title || '').trim();
+    if (planTitle !== '') {
+      return planTitle;
+    }
+    if (other?.subscription_plan_id) {
+      return `subscription-${other.subscription_plan_id}`;
+    }
+  }
+  return '';
+}
+
 function renderModelName(record, copyText, t) {
   let other = getLogOther(record.other);
   let modelMapped =
@@ -598,6 +616,7 @@ export const getLogsColumns = ({
       title: t('令牌'),
       dataIndex: 'token_name',
       render: (text, record, index) => {
+        const tokenLabel = resolveUsageLogTokenLabel(record);
         return record.type === 0 ||
           record.type === 2 ||
           record.type === 5 ||
@@ -607,11 +626,10 @@ export const getLogsColumns = ({
               color='grey'
               shape='circle'
               onClick={(event) => {
-                copyText(event, text);
+                copyText(event, tokenLabel);
               }}
             >
-              {' '}
-              {t(text)}{' '}
+              {tokenLabel || '-'}
             </Tag>
           </div>
         ) : (

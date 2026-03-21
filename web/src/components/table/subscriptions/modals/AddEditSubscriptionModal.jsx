@@ -64,6 +64,11 @@ const resetPeriodOptions = [
   { value: 'custom', label: '自定义(秒)' },
 ];
 
+const billingModeOptions = [
+  { value: 'standard', label: '标准总量/固定周期' },
+  { value: 'sliding_window', label: 'Codex 滑动窗口' },
+];
+
 const AddEditSubscriptionModal = ({
   visible,
   handleClose,
@@ -90,6 +95,8 @@ const AddEditSubscriptionModal = ({
     custom_seconds: 0,
     quota_reset_period: 'never',
     quota_reset_custom_seconds: 0,
+    billing_mode: 'standard',
+    primary_window_amount: 0,
     enabled: true,
     sort_order: 0,
     max_purchase_per_user: 0,
@@ -114,6 +121,10 @@ const AddEditSubscriptionModal = ({
       custom_seconds: Number(p.custom_seconds || 0),
       quota_reset_period: p.quota_reset_period || 'never',
       quota_reset_custom_seconds: Number(p.quota_reset_custom_seconds || 0),
+      billing_mode: p.billing_mode || 'standard',
+      primary_window_amount: Number(
+        quotaToDisplayAmount(p.primary_window_amount || 0).toFixed(2),
+      ),
       enabled: p.enabled !== false,
       sort_order: Number(p.sort_order || 0),
       max_purchase_per_user: Number(p.max_purchase_per_user || 0),
@@ -155,11 +166,20 @@ const AddEditSubscriptionModal = ({
           currency: 'USD',
           duration_value: Number(values.duration_value || 0),
           custom_seconds: Number(values.custom_seconds || 0),
-          quota_reset_period: values.quota_reset_period || 'never',
+          quota_reset_period:
+            values.billing_mode === 'sliding_window'
+              ? 'never'
+              : values.quota_reset_period || 'never',
           quota_reset_custom_seconds:
-            values.quota_reset_period === 'custom'
+            values.billing_mode === 'sliding_window'
+              ? 0
+              : values.quota_reset_period === 'custom'
               ? Number(values.quota_reset_custom_seconds || 0)
               : 0,
+          billing_mode: values.billing_mode || 'standard',
+          primary_window_amount: displayAmountToQuota(
+            values.primary_window_amount,
+          ),
           sort_order: Number(values.sort_order || 0),
           max_purchase_per_user: Number(values.max_purchase_per_user || 0),
           total_amount: displayAmountToQuota(values.total_amount),
@@ -296,6 +316,21 @@ const AddEditSubscriptionModal = ({
                     </Col>
 
                     <Col span={12}>
+                      <Form.Select
+                        field='billing_mode'
+                        label={t('计费模式')}
+                        required
+                        rules={[{ required: true }]}
+                      >
+                        {billingModeOptions.map((o) => (
+                          <Select.Option key={o.value} value={o.value}>
+                            {t(o.label)}
+                          </Select.Option>
+                        ))}
+                      </Form.Select>
+                    </Col>
+
+                    <Col span={12}>
                       <Form.InputNumber
                         field='price_amount'
                         label={t('实付金额')}
@@ -310,14 +345,42 @@ const AddEditSubscriptionModal = ({
                     <Col span={12}>
                       <Form.InputNumber
                         field='total_amount'
-                        label={t('总额度')}
+                        label={
+                          values.billing_mode === 'sliding_window'
+                            ? t('每周额度')
+                            : t('总额度')
+                        }
                         required
                         min={0}
                         precision={2}
                         rules={[{ required: true, message: t('请输入总额度') }]}
-                        extraText={`${t('0 表示不限')} · ${t('原生额度')}：${displayAmountToQuota(
-                          values.total_amount,
-                        )}`}
+                        extraText={
+                          values.billing_mode === 'sliding_window'
+                            ? `${t('7天周期额度')} · ${t('原生额度')}：${displayAmountToQuota(
+                                values.total_amount,
+                              )}`
+                            : `${t('0 表示不限')} · ${t('原生额度')}：${displayAmountToQuota(
+                                values.total_amount,
+                              )}`
+                        }
+                        style={{ width: '100%' }}
+                      />
+                    </Col>
+
+                    <Col span={12}>
+                      <Form.InputNumber
+                        field='primary_window_amount'
+                        label={t('5小时滚动窗口额度')}
+                        min={0}
+                        precision={2}
+                        extraText={
+                          values.billing_mode === 'sliding_window'
+                            ? `${t('必填')} · ${t('原生额度')}：${displayAmountToQuota(
+                                values.primary_window_amount,
+                              )}`
+                            : t('仅滑动窗口模式生效')
+                        }
+                        disabled={values.billing_mode !== 'sliding_window'}
                         style={{ width: '100%' }}
                       />
                     </Col>
@@ -458,47 +521,59 @@ const AddEditSubscriptionModal = ({
                         {t('额度重置')}
                       </Text>
                       <div className='text-xs text-gray-600'>
-                        {t('支持周期性重置套餐权益额度')}
+                        {values.billing_mode === 'sliding_window'
+                          ? t(
+                              '滑动窗口模式下，5小时窗口按事件滚动计算；周额度从首次使用开始每7天重置。',
+                            )
+                          : t('支持周期性重置套餐权益额度')}
                       </div>
                     </div>
                   </div>
 
-                  <Row gutter={12}>
-                    <Col span={12}>
-                      <Form.Select
-                        field='quota_reset_period'
-                        label={t('重置周期')}
-                      >
-                        {resetPeriodOptions.map((o) => (
-                          <Select.Option key={o.value} value={o.value}>
-                            {o.label}
-                          </Select.Option>
-                        ))}
-                      </Form.Select>
-                    </Col>
-                    <Col span={12}>
-                      {values.quota_reset_period === 'custom' ? (
-                        <Form.InputNumber
-                          field='quota_reset_custom_seconds'
-                          label={t('自定义秒数')}
-                          required
-                          min={60}
-                          precision={0}
-                          rules={[{ required: true, message: t('请输入秒数') }]}
-                          style={{ width: '100%' }}
-                        />
-                      ) : (
-                        <Form.InputNumber
-                          field='quota_reset_custom_seconds'
-                          label={t('自定义秒数')}
-                          min={0}
-                          precision={0}
-                          style={{ width: '100%' }}
-                          disabled
-                        />
+                  {values.billing_mode === 'sliding_window' ? (
+                    <div className='text-sm text-semi-color-text-1'>
+                      {t(
+                        '该模式会启用两层限制：1. 任意连续5小时内按滚动窗口累计；2. 从首次使用开始按7天周期统计每周额度。',
                       )}
-                    </Col>
-                  </Row>
+                    </div>
+                  ) : (
+                    <Row gutter={12}>
+                      <Col span={12}>
+                        <Form.Select
+                          field='quota_reset_period'
+                          label={t('重置周期')}
+                        >
+                          {resetPeriodOptions.map((o) => (
+                            <Select.Option key={o.value} value={o.value}>
+                              {o.label}
+                            </Select.Option>
+                          ))}
+                        </Form.Select>
+                      </Col>
+                      <Col span={12}>
+                        {values.quota_reset_period === 'custom' ? (
+                          <Form.InputNumber
+                            field='quota_reset_custom_seconds'
+                            label={t('自定义秒数')}
+                            required
+                            min={60}
+                            precision={0}
+                            rules={[{ required: true, message: t('请输入秒数') }]}
+                            style={{ width: '100%' }}
+                          />
+                        ) : (
+                          <Form.InputNumber
+                            field='quota_reset_custom_seconds'
+                            label={t('自定义秒数')}
+                            min={0}
+                            precision={0}
+                            style={{ width: '100%' }}
+                            disabled
+                          />
+                        )}
+                      </Col>
+                    </Row>
+                  )}
                 </Card>
 
                 {/* 第三方支付配置 */}

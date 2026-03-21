@@ -144,6 +144,10 @@ func AdminCreateSubscriptionPlan(c *gin.Context) {
 		common.ApiErrorMsg(c, "总额度不能为负数")
 		return
 	}
+	if req.Plan.PrimaryWindowAmount < 0 {
+		common.ApiErrorMsg(c, "5小时滚动窗口额度不能为负数")
+		return
+	}
 	req.Plan.UpgradeGroup = strings.TrimSpace(req.Plan.UpgradeGroup)
 	if req.Plan.UpgradeGroup != "" {
 		if _, ok := ratio_setting.GetGroupRatioCopy()[req.Plan.UpgradeGroup]; !ok {
@@ -151,10 +155,24 @@ func AdminCreateSubscriptionPlan(c *gin.Context) {
 			return
 		}
 	}
-	req.Plan.QuotaResetPeriod = model.NormalizeResetPeriod(req.Plan.QuotaResetPeriod)
-	if req.Plan.QuotaResetPeriod == model.SubscriptionResetCustom && req.Plan.QuotaResetCustomSeconds <= 0 {
-		common.ApiErrorMsg(c, "自定义重置周期需大于0秒")
-		return
+	req.Plan.BillingMode = model.NormalizeSubscriptionBillingMode(req.Plan.BillingMode)
+	if req.Plan.BillingMode == model.SubscriptionBillingModeSlidingWindow {
+		req.Plan.QuotaResetPeriod = model.SubscriptionResetNever
+		req.Plan.QuotaResetCustomSeconds = 0
+		if req.Plan.PrimaryWindowAmount <= 0 {
+			common.ApiErrorMsg(c, "5小时滚动窗口额度需大于0")
+			return
+		}
+		if req.Plan.TotalAmount <= 0 {
+			common.ApiErrorMsg(c, "每周额度需大于0")
+			return
+		}
+	} else {
+		req.Plan.QuotaResetPeriod = model.NormalizeResetPeriod(req.Plan.QuotaResetPeriod)
+		if req.Plan.QuotaResetPeriod == model.SubscriptionResetCustom && req.Plan.QuotaResetCustomSeconds <= 0 {
+			common.ApiErrorMsg(c, "自定义重置周期需大于0秒")
+			return
+		}
 	}
 	err := model.DB.Create(&req.Plan).Error
 	if err != nil {
@@ -207,6 +225,10 @@ func AdminUpdateSubscriptionPlan(c *gin.Context) {
 		common.ApiErrorMsg(c, "总额度不能为负数")
 		return
 	}
+	if req.Plan.PrimaryWindowAmount < 0 {
+		common.ApiErrorMsg(c, "5小时滚动窗口额度不能为负数")
+		return
+	}
 	req.Plan.UpgradeGroup = strings.TrimSpace(req.Plan.UpgradeGroup)
 	if req.Plan.UpgradeGroup != "" {
 		if _, ok := ratio_setting.GetGroupRatioCopy()[req.Plan.UpgradeGroup]; !ok {
@@ -214,10 +236,24 @@ func AdminUpdateSubscriptionPlan(c *gin.Context) {
 			return
 		}
 	}
-	req.Plan.QuotaResetPeriod = model.NormalizeResetPeriod(req.Plan.QuotaResetPeriod)
-	if req.Plan.QuotaResetPeriod == model.SubscriptionResetCustom && req.Plan.QuotaResetCustomSeconds <= 0 {
-		common.ApiErrorMsg(c, "自定义重置周期需大于0秒")
-		return
+	req.Plan.BillingMode = model.NormalizeSubscriptionBillingMode(req.Plan.BillingMode)
+	if req.Plan.BillingMode == model.SubscriptionBillingModeSlidingWindow {
+		req.Plan.QuotaResetPeriod = model.SubscriptionResetNever
+		req.Plan.QuotaResetCustomSeconds = 0
+		if req.Plan.PrimaryWindowAmount <= 0 {
+			common.ApiErrorMsg(c, "5小时滚动窗口额度需大于0")
+			return
+		}
+		if req.Plan.TotalAmount <= 0 {
+			common.ApiErrorMsg(c, "每周额度需大于0")
+			return
+		}
+	} else {
+		req.Plan.QuotaResetPeriod = model.NormalizeResetPeriod(req.Plan.QuotaResetPeriod)
+		if req.Plan.QuotaResetPeriod == model.SubscriptionResetCustom && req.Plan.QuotaResetCustomSeconds <= 0 {
+			common.ApiErrorMsg(c, "自定义重置周期需大于0秒")
+			return
+		}
 	}
 
 	err := model.DB.Transaction(func(tx *gorm.DB) error {
@@ -236,6 +272,8 @@ func AdminUpdateSubscriptionPlan(c *gin.Context) {
 			"creem_product_id":           req.Plan.CreemProductId,
 			"max_purchase_per_user":      req.Plan.MaxPurchasePerUser,
 			"total_amount":               req.Plan.TotalAmount,
+			"billing_mode":               req.Plan.BillingMode,
+			"primary_window_amount":      req.Plan.PrimaryWindowAmount,
 			"upgrade_group":              req.Plan.UpgradeGroup,
 			"quota_reset_period":         req.Plan.QuotaResetPeriod,
 			"quota_reset_custom_seconds": req.Plan.QuotaResetCustomSeconds,

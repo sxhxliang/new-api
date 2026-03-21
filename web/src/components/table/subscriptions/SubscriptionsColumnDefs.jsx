@@ -50,6 +50,9 @@ function formatDuration(plan, t) {
 }
 
 function formatResetPeriod(plan, t) {
+  if ((plan?.billing_mode || 'standard') === 'sliding_window') {
+    return `${t('5小时滚动窗口')} / ${t('7天滚动周限额')}`;
+  }
   const period = plan?.quota_reset_period || 'never';
   if (period === 'daily') return t('每天');
   if (period === 'weekly') return t('每周');
@@ -62,6 +65,13 @@ function formatResetPeriod(plan, t) {
     return `${seconds} ${t('秒')}`;
   }
   return t('不重置');
+}
+
+function formatBillingMode(plan, t) {
+  if ((plan?.billing_mode || 'standard') === 'sliding_window') {
+    return t('Codex 滑动窗口');
+  }
+  return t('标准总量/固定周期');
 }
 
 const renderPlanTitle = (text, record, t) => {
@@ -81,7 +91,11 @@ const renderPlanTitle = (text, record, t) => {
         <Text strong style={{ color: 'var(--semi-color-success)' }}>
           {convertUSDToCurrency(Number(plan?.price_amount || 0), 2)}
         </Text>
-        <Text type='tertiary'>{t('总额度')}</Text>
+        <Text type='tertiary'>
+          {(plan?.billing_mode || 'standard') === 'sliding_window'
+            ? t('每周额度')
+            : t('总额度')}
+        </Text>
         {plan?.total_amount > 0 ? (
           <Tooltip content={`${t('原生额度')}：${plan.total_amount}`}>
             <Text>{renderQuota(plan.total_amount)}</Text>
@@ -91,6 +105,16 @@ const renderPlanTitle = (text, record, t) => {
         )}
         <Text type='tertiary'>{t('升级分组')}</Text>
         <Text>{plan?.upgrade_group ? plan.upgrade_group : t('不升级')}</Text>
+        <Text type='tertiary'>{t('计费模式')}</Text>
+        <Text>{formatBillingMode(plan, t)}</Text>
+        <Text type='tertiary'>{t('5小时额度')}</Text>
+        {plan?.primary_window_amount > 0 ? (
+          <Tooltip content={`${t('原生额度')}：${plan.primary_window_amount}`}>
+            <Text>{renderQuota(plan.primary_window_amount)}</Text>
+          </Tooltip>
+        ) : (
+          <Text>{t('-')}</Text>
+        )}
         <Text type='tertiary'>{t('购买上限')}</Text>
         <Text>
           {plan?.max_purchase_per_user > 0
@@ -170,10 +194,14 @@ const renderEnabled = (text, record, t) => {
 
 const renderTotalAmount = (text, record, t) => {
   const total = Number(record?.plan?.total_amount || 0);
+  const label =
+    (record?.plan?.billing_mode || 'standard') === 'sliding_window'
+      ? t('周额度')
+      : t('总额度');
   return (
     <Text type={total > 0 ? 'secondary' : 'tertiary'}>
       {total > 0 ? (
-        <Tooltip content={`${t('原生额度')}：${total}`}>
+        <Tooltip content={`${label} · ${t('原生额度')}：${total}`}>
           <span>{renderQuota(total)}</span>
         </Tooltip>
       ) : (
@@ -193,8 +221,9 @@ const renderUpgradeGroup = (text, record, t) => {
 };
 
 const renderResetPeriod = (text, record, t) => {
+  const isSliding = (record?.plan?.billing_mode || 'standard') === 'sliding_window';
   const period = record?.plan?.quota_reset_period || 'never';
-  const isNever = period === 'never';
+  const isNever = !isSliding && period === 'never';
   return (
     <Text type={isNever ? 'tertiary' : 'secondary'}>
       {formatResetPeriod(record?.plan, t)}

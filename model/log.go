@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/QuantumNous/new-api/common"
@@ -94,6 +95,7 @@ func RecordErrorLog(c *gin.Context, userId int, channelId int, modelName string,
 	logger.LogInfo(c, fmt.Sprintf("record error log: userId=%d, channelId=%d, modelName=%s, tokenName=%s, content=%s", userId, channelId, modelName, tokenName, content))
 	username := c.GetString("username")
 	requestId := c.GetString(common.RequestIdKey)
+	tokenName = resolveLogTokenName(tokenName, other)
 	otherStr := common.MapToJsonStr(other)
 	// 判断是否需要记录 IP
 	needRecordIp := false
@@ -152,6 +154,7 @@ func RecordConsumeLog(c *gin.Context, userId int, params RecordConsumeLogParams)
 	if !common.LogConsumeEnabled {
 		return
 	}
+	params.TokenName = resolveLogTokenName(params.TokenName, params.Other)
 	logger.LogInfo(c, fmt.Sprintf("record consume log: userId=%d, params=%s", userId, common.GetJsonString(params)))
 	username := c.GetString("username")
 	requestId := c.GetString(common.RequestIdKey)
@@ -222,6 +225,7 @@ func RecordTaskBillingLog(params RecordTaskBillingLogParams) {
 			tokenName = token.Name
 		}
 	}
+	tokenName = resolveLogTokenName(tokenName, params.Other)
 	log := &Log{
 		UserId:    params.UserId,
 		Username:  username,
@@ -240,6 +244,27 @@ func RecordTaskBillingLog(params RecordTaskBillingLogParams) {
 	if err != nil {
 		common.SysLog("failed to record task billing log: " + err.Error())
 	}
+}
+
+func resolveLogTokenName(tokenName string, other map[string]interface{}) string {
+	tokenName = strings.TrimSpace(tokenName)
+	if tokenName != "" {
+		return tokenName
+	}
+	if other == nil {
+		return ""
+	}
+	billingSource, _ := other["billing_source"].(string)
+	if strings.TrimSpace(billingSource) != "subscription" {
+		return ""
+	}
+	if planTitle, ok := other["subscription_plan_title"].(string); ok && strings.TrimSpace(planTitle) != "" {
+		return strings.TrimSpace(planTitle)
+	}
+	if planID, ok := other["subscription_plan_id"]; ok {
+		return fmt.Sprintf("subscription-%v", planID)
+	}
+	return ""
 }
 
 func GetAllLogs(logType int, startTimestamp int64, endTimestamp int64, modelName string, username string, tokenName string, startIdx int, num int, channel int, group string, requestId string) (logs []*Log, total int64, err error) {
