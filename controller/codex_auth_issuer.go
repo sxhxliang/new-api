@@ -41,7 +41,7 @@ func CodexIssuerAuthorize(c *gin.Context) {
 
 	user, ok := getCodexIssuerCurrentUser(c)
 	if !ok {
-		renderCodexIssuerLoginPage(c, c.Request.URL.RequestURI(), "")
+		redirectCodexIssuerToWebLogin(c, c.Request.URL.RequestURI(), "")
 		return
 	}
 
@@ -62,7 +62,7 @@ func CodexIssuerAuthorizeDecision(c *gin.Context) {
 
 	user, ok := getCodexIssuerCurrentUser(c)
 	if !ok {
-		renderCodexIssuerLoginPage(c, buildCodexIssuerAuthorizeContinueTo(c), "")
+		redirectCodexIssuerToWebLogin(c, buildCodexIssuerAuthorizeContinueTo(c), "")
 		return
 	}
 
@@ -113,14 +113,14 @@ func createCodexIssuerAuthorizeRedirectTarget(c *gin.Context, user *model.User) 
 func CodexIssuerBrowserLogin(c *gin.Context) {
 	continueTo := normalizeCodexIssuerContinueTo(c.PostForm("continue_to"), "/oauth/authorize")
 	if !common.PasswordLoginEnabled {
-		renderCodexIssuerLoginPage(c, continueTo, "Password login is disabled.")
+		redirectCodexIssuerToWebLogin(c, continueTo, "Password login is disabled.")
 		return
 	}
 
 	username := strings.TrimSpace(c.PostForm("username"))
 	password := c.PostForm("password")
 	if username == "" || password == "" {
-		renderCodexIssuerLoginPage(c, continueTo, "Username and password are required.")
+		redirectCodexIssuerToWebLogin(c, continueTo, "Username and password are required.")
 		return
 	}
 
@@ -129,11 +129,11 @@ func CodexIssuerBrowserLogin(c *gin.Context) {
 		Password: password,
 	}
 	if err := user.ValidateAndFill(); err != nil {
-		renderCodexIssuerLoginPage(c, continueTo, "Invalid username or password.")
+		redirectCodexIssuerToWebLogin(c, continueTo, "Invalid username or password.")
 		return
 	}
 	if model.IsTwoFAEnabled(user.Id) {
-		renderCodexIssuerLoginPage(c, continueTo, "This account has 2FA enabled. Sign in on the dashboard first, then retry.")
+		redirectCodexIssuerToWebLogin(c, continueTo, "This account has 2FA enabled. Sign in on the dashboard first, then retry.")
 		return
 	}
 	if err := setCodexIssuerBrowserSession(c, &user); err != nil {
@@ -259,7 +259,7 @@ func CodexIssuerPollDeviceCode(c *gin.Context) {
 
 func CodexIssuerDevicePage(c *gin.Context) {
 	if _, ok := getCodexIssuerCurrentUser(c); !ok {
-		renderCodexIssuerLoginPage(c, "/codex/device", "Sign in to approve a device code.")
+		redirectCodexIssuerToWebLogin(c, "/codex/device", "Sign in to approve a device code.")
 		return
 	}
 	renderCodexIssuerDevicePage(c, "")
@@ -268,7 +268,7 @@ func CodexIssuerDevicePage(c *gin.Context) {
 func CodexIssuerApproveDeviceCode(c *gin.Context) {
 	user, ok := getCodexIssuerCurrentUser(c)
 	if !ok {
-		renderCodexIssuerLoginPage(c, "/codex/device", "Sign in to approve a device code.")
+		redirectCodexIssuerToWebLogin(c, "/codex/device", "Sign in to approve a device code.")
 		return
 	}
 
@@ -355,6 +355,20 @@ func writeCodexIssuerTokenError(c *gin.Context, err error) {
 	default:
 		common.ApiError(c, err)
 	}
+}
+
+func redirectCodexIssuerToWebLogin(c *gin.Context, continueTo string, message string) {
+	query := url.Values{}
+	query.Set("continue_to", normalizeCodexIssuerContinueTo(continueTo, "/oauth/authorize"))
+	if trimmed := strings.TrimSpace(message); trimmed != "" {
+		query.Set("auth_message", trimmed)
+	}
+
+	target := "/login"
+	if encoded := query.Encode(); encoded != "" {
+		target += "?" + encoded
+	}
+	c.Redirect(http.StatusFound, target)
 }
 
 func renderCodexIssuerLoginPage(c *gin.Context, continueTo string, message string) {

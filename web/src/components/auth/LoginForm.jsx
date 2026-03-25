@@ -31,6 +31,9 @@ import {
   getSystemName,
   getOAuthProviderIcon,
   setUserData,
+  normalizeLoginContinueTo,
+  storeLoginContinueTo,
+  clearLoginContinueTo,
   onGitHubOAuthClicked,
   onDiscordOAuthClicked,
   onOIDCClicked,
@@ -142,6 +145,10 @@ const LoginForm = () => {
       status.telegram_oauth ||
       hasCustomOAuthProviders,
   );
+  const continueTo = useMemo(
+    () => normalizeLoginContinueTo(searchParams.get('continue_to')),
+    [searchParams],
+  );
 
   useEffect(() => {
     if (status?.turnstile_check) {
@@ -170,7 +177,39 @@ const LoginForm = () => {
     if (searchParams.get('expired')) {
       showError(t('未登录或登录已过期，请重新登录'));
     }
-  }, []);
+  }, [searchParams, t]);
+
+  useEffect(() => {
+    if (continueTo) {
+      storeLoginContinueTo(continueTo);
+    } else {
+      clearLoginContinueTo();
+    }
+  }, [continueTo]);
+
+  useEffect(() => {
+    const authMessage = searchParams.get('auth_message');
+    if (!authMessage) {
+      return;
+    }
+    showInfo(authMessage);
+    const nextSearchParams = new URLSearchParams(searchParams);
+    nextSearchParams.delete('auth_message');
+    setSearchParams(nextSearchParams, { replace: true });
+  }, [searchParams, setSearchParams]);
+
+  const navigateAfterLogin = (fallbackPath) => {
+    clearLoginContinueTo();
+    navigate(continueTo || fallbackPath);
+  };
+
+  const prepareContinueToForOAuth = () => {
+    if (continueTo) {
+      storeLoginContinueTo(continueTo);
+    } else {
+      clearLoginContinueTo();
+    }
+  };
 
   const onWeChatLoginClicked = () => {
     if ((hasUserAgreement || hasPrivacyPolicy) && !agreedToTerms) {
@@ -198,7 +237,7 @@ const LoginForm = () => {
         localStorage.setItem('user', JSON.stringify(data));
         setUserData(data);
         updateAPI();
-        navigate('/');
+        navigateAfterLogin('/');
         showSuccess('登录成功！');
         setShowWeChatLoginModal(false);
       } else {
@@ -255,7 +294,7 @@ const LoginForm = () => {
               centered: true,
             });
           }
-          navigate('/console');
+          navigateAfterLogin('/console');
         } else {
           showError(message);
         }
@@ -300,7 +339,7 @@ const LoginForm = () => {
         showSuccess('登录成功！');
         setUserData(data);
         updateAPI();
-        navigate('/');
+        navigateAfterLogin('/');
       } else {
         showError(message);
       }
@@ -318,6 +357,7 @@ const LoginForm = () => {
     if (githubButtonDisabled) {
       return;
     }
+    prepareContinueToForOAuth();
     setGithubLoading(true);
     setGithubButtonDisabled(true);
     setGithubButtonState('redirecting');
@@ -343,6 +383,7 @@ const LoginForm = () => {
       showInfo(t('请先阅读并同意用户协议和隐私政策'));
       return;
     }
+    prepareContinueToForOAuth();
     setDiscordLoading(true);
     try {
       onDiscordOAuthClicked(status.discord_client_id, { shouldLogout: true });
@@ -358,6 +399,7 @@ const LoginForm = () => {
       showInfo(t('请先阅读并同意用户协议和隐私政策'));
       return;
     }
+    prepareContinueToForOAuth();
     setOidcLoading(true);
     try {
       onOIDCClicked(
@@ -378,6 +420,7 @@ const LoginForm = () => {
       showInfo(t('请先阅读并同意用户协议和隐私政策'));
       return;
     }
+    prepareContinueToForOAuth();
     setLinuxdoLoading(true);
     try {
       onLinuxDOOAuthClicked(status.linuxdo_client_id, { shouldLogout: true });
@@ -393,6 +436,7 @@ const LoginForm = () => {
       showInfo(t('请先阅读并同意用户协议和隐私政策'));
       return;
     }
+    prepareContinueToForOAuth();
     setCustomOAuthLoading((prev) => ({ ...prev, [provider.slug]: true }));
     try {
       onCustomOAuthClicked(provider, { shouldLogout: true });
@@ -456,7 +500,7 @@ const LoginForm = () => {
         setUserData(finish.data);
         updateAPI();
         showSuccess('登录成功！');
-        navigate('/console');
+        navigateAfterLogin('/console');
       } else {
         showError(finish.message || 'Passkey 登录失败，请重试');
       }
@@ -491,7 +535,7 @@ const LoginForm = () => {
     setUserData(data);
     updateAPI();
     showSuccess('登录成功！');
-    navigate('/console');
+    navigateAfterLogin('/console');
   };
 
   // 返回登录页面

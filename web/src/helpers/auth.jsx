@@ -21,6 +21,44 @@ import React from 'react';
 import { Navigate } from 'react-router-dom';
 import { history } from './history';
 
+const loginContinueToStorageKey = 'login_continue_to';
+
+export function normalizeLoginContinueTo(value) {
+  const trimmed = (value || '').trim();
+  if (!trimmed) {
+    return '';
+  }
+  if (trimmed.startsWith('/oauth/authorize')) {
+    return trimmed;
+  }
+  if (trimmed.startsWith('/codex/device')) {
+    return '/codex/device';
+  }
+  return '';
+}
+
+export function storeLoginContinueTo(value) {
+  const normalized = normalizeLoginContinueTo(value);
+  if (!normalized) {
+    sessionStorage.removeItem(loginContinueToStorageKey);
+    return '';
+  }
+  sessionStorage.setItem(loginContinueToStorageKey, normalized);
+  return normalized;
+}
+
+export function consumeLoginContinueTo() {
+  const normalized = normalizeLoginContinueTo(
+    sessionStorage.getItem(loginContinueToStorageKey),
+  );
+  sessionStorage.removeItem(loginContinueToStorageKey);
+  return normalized;
+}
+
+export function clearLoginContinueTo() {
+  sessionStorage.removeItem(loginContinueToStorageKey);
+}
+
 export function authHeader() {
   // return authorization header with jwt token
   let user = JSON.parse(localStorage.getItem('user'));
@@ -33,6 +71,10 @@ export function authHeader() {
 }
 
 export const AuthRedirect = ({ children }) => {
+  if (normalizeLoginContinueTo(new URLSearchParams(window.location.search).get('continue_to'))) {
+    return children;
+  }
+
   const user = localStorage.getItem('user');
 
   if (user) {

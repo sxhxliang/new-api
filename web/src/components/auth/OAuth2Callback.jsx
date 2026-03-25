@@ -26,6 +26,8 @@ import {
   showSuccess,
   updateAPI,
   setUserData,
+  consumeLoginContinueTo,
+  clearLoginContinueTo,
 } from '../../helpers';
 import { UserContext } from '../../context/User';
 import Loading from '../common/ui/Loading';
@@ -57,17 +59,20 @@ const OAuth2Callback = (props) => {
       }
 
       if (data?.action === 'bind') {
+        clearLoginContinueTo();
         showSuccess(t('绑定成功！'));
         navigate('/console/personal');
       } else {
+        const continueTo = consumeLoginContinueTo();
         userDispatch({ type: 'login', payload: data });
         localStorage.setItem('user', JSON.stringify(data));
         setUserData(data);
         updateAPI();
         showSuccess(t('登录成功！'));
-        navigate('/console/token');
+        navigate(continueTo || '/console/token');
       }
     } catch (error) {
+      clearLoginContinueTo();
       // 网络错误等可重试
       if (retry < MAX_RETRIES) {
         // 递增的退避等待
@@ -93,6 +98,7 @@ const OAuth2Callback = (props) => {
 
     // 参数缺失直接返回
     if (!code) {
+      clearLoginContinueTo();
       showError(t('未获取到授权码'));
       navigate('/console/personal');
       return;
