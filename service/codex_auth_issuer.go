@@ -73,11 +73,11 @@ type CodexDeviceAuthorizationExchange struct {
 }
 
 type CodexDeviceCodeView struct {
-	DeviceAuthID string
-	UserCode     string
-	Approved     bool
-	Polls        int
-	CreatedAt    time.Time
+	DeviceAuthID string    `json:"device_auth_id"`
+	UserCode     string    `json:"user_code"`
+	Approved     bool      `json:"approved"`
+	Polls        int       `json:"polls"`
+	CreatedAt    time.Time `json:"created_at"`
 }
 
 type codexAuthCodeRecord struct {

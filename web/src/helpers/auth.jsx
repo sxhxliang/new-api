@@ -55,6 +55,12 @@ export function consumeLoginContinueTo() {
   return normalized;
 }
 
+export function getLoginContinueTo() {
+  return normalizeLoginContinueTo(
+    sessionStorage.getItem(loginContinueToStorageKey),
+  );
+}
+
 export function clearLoginContinueTo() {
   sessionStorage.removeItem(loginContinueToStorageKey);
 }

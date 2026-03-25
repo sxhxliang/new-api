@@ -27,6 +27,7 @@ import {
   updateAPI,
   setUserData,
   consumeLoginContinueTo,
+  getLoginContinueTo,
   clearLoginContinueTo,
 } from '../../helpers';
 import { UserContext } from '../../context/User';
@@ -44,6 +45,22 @@ const OAuth2Callback = (props) => {
   // 最大重试次数
   const MAX_RETRIES = 3;
 
+  const navigateAfterOAuthFailure = (message) => {
+    const continueTo = getLoginContinueTo();
+    if (continueTo) {
+      const params = new URLSearchParams();
+      params.set('continue_to', continueTo);
+      if (message) {
+        params.set('auth_message', message);
+      }
+      navigate(`/login?${params.toString()}`, { replace: true });
+      return;
+    }
+
+    clearLoginContinueTo();
+    navigate('/console/personal');
+  };
+
   const sendCode = async (code, state, retry = 0) => {
     try {
       const { data: resData } = await API.get(
@@ -54,7 +71,9 @@ const OAuth2Callback = (props) => {
 
       if (!success) {
         // 业务错误不重试，直接显示错误
-        showError(message || t('授权失败'));
+        const errorMessage = message || t('授权失败');
+        showError(errorMessage);
+        navigateAfterOAuthFailure(errorMessage);
         return;
       }
 
@@ -72,7 +91,6 @@ const OAuth2Callback = (props) => {
         navigate(continueTo || '/console/token');
       }
     } catch (error) {
-      clearLoginContinueTo();
       // 网络错误等可重试
       if (retry < MAX_RETRIES) {
         // 递增的退避等待
@@ -81,8 +99,9 @@ const OAuth2Callback = (props) => {
       }
 
       // 重试次数耗尽，提示错误并返回设置页面
-      showError(error.message || t('授权失败'));
-      navigate('/console/personal');
+      const errorMessage = error.message || t('授权失败');
+      showError(errorMessage);
+      navigateAfterOAuthFailure(errorMessage);
     }
   };
 
@@ -98,9 +117,9 @@ const OAuth2Callback = (props) => {
 
     // 参数缺失直接返回
     if (!code) {
-      clearLoginContinueTo();
-      showError(t('未获取到授权码'));
-      navigate('/console/personal');
+      const errorMessage = t('未获取到授权码');
+      showError(errorMessage);
+      navigateAfterOAuthFailure(errorMessage);
       return;
     }
 
