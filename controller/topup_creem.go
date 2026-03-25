@@ -14,6 +14,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -365,12 +366,14 @@ func handleCheckoutCompleted(c *gin.Context, event *CreemWebhookEvent) {
 }
 
 type CreemCheckoutRequest struct {
-	ProductId string `json:"product_id"`
-	RequestId string `json:"request_id"`
-	Customer  struct {
-		Email string `json:"email"`
-	} `json:"customer"`
-	Metadata map[string]string `json:"metadata,omitempty"`
+	ProductId string                 `json:"product_id"`
+	RequestId string                 `json:"request_id"`
+	Customer  *CreemCheckoutCustomer `json:"customer,omitempty"`
+	Metadata  map[string]string      `json:"metadata,omitempty"`
+}
+
+type CreemCheckoutCustomer struct {
+	Email string `json:"email"`
 }
 
 type CreemCheckoutResponse struct {
@@ -390,21 +393,23 @@ func genCreemLink(referenceId string, product *CreemProduct, email string, usern
 		log.Printf("使用Creem测试环境: %s", apiUrl)
 	}
 
-	// 构建请求数据，确保包含用户邮箱
+	trimmedEmail := strings.TrimSpace(email)
+
+	// 构建请求数据。仅在邮箱有效时预填用户邮箱，避免向 Creem 发送空邮箱导致 400。
 	requestData := CreemCheckoutRequest{
 		ProductId: product.ProductId,
 		RequestId: referenceId, // 这个作为订单ID传递给Creem
-		Customer: struct {
-			Email string `json:"email"`
-		}{
-			Email: email, // 用户邮箱会在支付页面预填充
-		},
 		Metadata: map[string]string{
 			"username":     username,
 			"reference_id": referenceId,
 			"product_name": product.Name,
 			"quota":        fmt.Sprintf("%d", product.Quota),
 		},
+	}
+	if trimmedEmail != "" {
+		requestData.Customer = &CreemCheckoutCustomer{
+			Email: trimmedEmail,
+		}
 	}
 
 	// 序列化请求数据
