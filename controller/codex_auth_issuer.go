@@ -3,7 +3,6 @@ package controller
 import (
 	"errors"
 	"fmt"
-	"html/template"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -32,20 +31,8 @@ type codexIssuerTokenRequest struct {
 	SubjectToken string `json:"subject_token"`
 }
 
-func CodexIssuerAuthorize(c *gin.Context) {
-	redirectURI := strings.TrimSpace(c.Query("redirect_uri"))
-	if redirectURI == "" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "redirect_uri is required"})
-		return
-	}
-
-	user, ok := getCodexIssuerCurrentUser(c)
-	if !ok {
-		redirectCodexIssuerToWebLogin(c, c.Request.URL.RequestURI(), "")
-		return
-	}
-
-	renderCodexIssuerAuthorizePage(c, user, "")
+type codexDeviceApproveRequest struct {
+	UserCode string `json:"user_code"`
 }
 
 func CodexIssuerAuthorizeDecision(c *gin.Context) {
@@ -83,7 +70,7 @@ func CodexIssuerAuthorizeDecision(c *gin.Context) {
 		}
 		c.Redirect(http.StatusFound, redirectTarget)
 	default:
-		renderCodexIssuerAuthorizePage(c, user, "Please choose Confirm or Cancel.")
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid action"})
 	}
 }
 
@@ -257,14 +244,6 @@ func CodexIssuerPollDeviceCode(c *gin.Context) {
 	})
 }
 
-func CodexIssuerDevicePage(c *gin.Context) {
-	if _, ok := getCodexIssuerCurrentUser(c); !ok {
-		redirectCodexIssuerToWebLogin(c, "/codex/device", "Sign in to approve a device code.")
-		return
-	}
-	renderCodexIssuerDevicePage(c, "")
-}
-
 func CodexIssuerApproveDeviceCode(c *gin.Context) {
 	user, ok := getCodexIssuerCurrentUser(c)
 	if !ok {
@@ -274,7 +253,7 @@ func CodexIssuerApproveDeviceCode(c *gin.Context) {
 
 	userCode := strings.TrimSpace(c.PostForm("user_code"))
 	if userCode == "" {
-		renderCodexIssuerDevicePage(c, "User code is required.")
+		redirectCodexIssuerToDevicePage(c, "User code is required.")
 		return
 	}
 
@@ -284,10 +263,73 @@ func CodexIssuerApproveDeviceCode(c *gin.Context) {
 		return
 	}
 	if !approved {
-		renderCodexIssuerDevicePage(c, "Device code not found.")
+		redirectCodexIssuerToDevicePage(c, "Device code not found.")
 		return
 	}
-	renderCodexIssuerDevicePage(c, "Approved device code.")
+	redirectCodexIssuerToDevicePage(c, "Approved device code.")
+}
+
+func CodexIssuerAuthorizeContext(c *gin.Context) {
+	user, ok := getCodexIssuerCurrentUser(c)
+	if !ok {
+		common.ApiErrorMsg(c, "未登录")
+		return
+	}
+
+	common.ApiSuccess(c, gin.H{
+		"id":           user.Id,
+		"username":     user.Username,
+		"display_name": user.DisplayName,
+		"email":        user.Email,
+	})
+}
+
+func CodexIssuerDeviceContext(c *gin.Context) {
+	user, ok := getCodexIssuerCurrentUser(c)
+	if !ok {
+		common.ApiErrorMsg(c, "未登录")
+		return
+	}
+
+	common.ApiSuccess(c, gin.H{
+		"user":         buildCodexIssuerContextUser(user),
+		"device_codes": service.ListCodexDeviceCodes(),
+	})
+}
+
+func CodexIssuerApproveDeviceCodeAPI(c *gin.Context) {
+	user, ok := getCodexIssuerCurrentUser(c)
+	if !ok {
+		common.ApiErrorMsg(c, "未登录")
+		return
+	}
+
+	var req codexDeviceApproveRequest
+	if err := common.DecodeJson(c.Request.Body, &req); err != nil {
+		common.ApiErrorMsg(c, "invalid json body")
+		return
+	}
+
+	userCode := strings.TrimSpace(req.UserCode)
+	if userCode == "" {
+		common.ApiErrorMsg(c, "User code is required.")
+		return
+	}
+
+	approved, err := service.ApproveCodexDeviceCode(userCode, user.Id)
+	if err != nil {
+		common.ApiError(c, err)
+		return
+	}
+	if !approved {
+		common.ApiErrorMsg(c, "Device code not found.")
+		return
+	}
+
+	common.ApiSuccess(c, gin.H{
+		"message":      "Approved device code.",
+		"device_codes": service.ListCodexDeviceCodes(),
+	})
 }
 
 func getCodexIssuerCurrentUser(c *gin.Context) (*model.User, bool) {
@@ -371,187 +413,21 @@ func redirectCodexIssuerToWebLogin(c *gin.Context, continueTo string, message st
 	c.Redirect(http.StatusFound, target)
 }
 
-func renderCodexIssuerLoginPage(c *gin.Context, continueTo string, message string) {
-	escapedContinueTo := template.HTMLEscapeString(normalizeCodexIssuerContinueTo(continueTo, "/oauth/authorize"))
-	escapedMessage := template.HTMLEscapeString(strings.TrimSpace(message))
-	messageHTML := ""
-	if escapedMessage != "" {
-		messageHTML = `<p class="flash">` + escapedMessage + `</p>`
+func redirectCodexIssuerToDevicePage(c *gin.Context, message string) {
+	target := "/codex/device"
+	if trimmed := strings.TrimSpace(message); trimmed != "" {
+		target += "?message=" + url.QueryEscape(trimmed)
 	}
-	body := `<!doctype html>
-<html>
-<head>
-  <meta charset="utf-8">
-  <title>Codex Sign In</title>
-  <style>
-    body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; background: #f6f7fb; color: #111827; margin: 0; }
-    .shell { width: min(28rem, calc(100vw - 2rem)); margin: 4rem auto; background: #fff; border: 1px solid #dbe1ea; border-radius: 18px; padding: 1.5rem; box-shadow: 0 18px 48px rgba(17, 24, 39, 0.08); }
-    h1 { margin: 0 0 0.75rem; font-size: 1.45rem; }
-    p { color: #4b5563; line-height: 1.5; }
-    .flash { background: #fff3cd; color: #7c5a00; border: 1px solid #f1d37a; border-radius: 12px; padding: 0.75rem 0.9rem; }
-    form { display: grid; gap: 0.9rem; margin-top: 1rem; }
-    label { display: grid; gap: 0.35rem; font-weight: 600; }
-    input { padding: 0.8rem 0.9rem; border: 1px solid #cbd5e1; border-radius: 12px; font: inherit; }
-    button { border: 0; border-radius: 12px; padding: 0.85rem 1rem; background: #111827; color: #fff; font: inherit; cursor: pointer; }
-  </style>
-</head>
-<body>
-  <div class="shell">
-    <h1>Sign in to ` + template.HTMLEscapeString(common.SystemName) + `</h1>
-    <p>This browser session will be used to complete the Codex authorization flow.</p>
-    ` + messageHTML + `
-    <form method="post" action="/oauth/login">
-      <input type="hidden" name="continue_to" value="` + escapedContinueTo + `" />
-      <label>
-        Username
-        <input name="username" autocomplete="username" />
-      </label>
-      <label>
-        Password
-        <input name="password" type="password" autocomplete="current-password" />
-      </label>
-      <button type="submit">Continue</button>
-    </form>
-  </div>
-</body>
-</html>`
-	c.Data(http.StatusOK, "text/html; charset=utf-8", []byte(body))
+	c.Redirect(http.StatusFound, target)
 }
 
-func renderCodexIssuerAuthorizePage(c *gin.Context, user *model.User, message string) {
-	email := strings.TrimSpace(user.Email)
-	if email == "" {
-		email = "-"
+func buildCodexIssuerContextUser(user *model.User) gin.H {
+	return gin.H{
+		"id":           user.Id,
+		"username":     user.Username,
+		"display_name": user.DisplayName,
+		"email":        user.Email,
 	}
-	displayName := strings.TrimSpace(user.DisplayName)
-	if displayName == "" {
-		displayName = "-"
-	}
-	scopeItems := strings.Fields(strings.TrimSpace(firstNonEmpty(c.Query("scope"), c.PostForm("scope"))))
-	if len(scopeItems) == 0 {
-		scopeItems = []string{"openid", "profile", "email"}
-	}
-
-	scopeRows := make([]string, 0, len(scopeItems))
-	for _, scope := range scopeItems {
-		scopeRows = append(scopeRows, "<li><code>"+template.HTMLEscapeString(scope)+"</code></li>")
-	}
-
-	messageHTML := ""
-	if trimmed := template.HTMLEscapeString(strings.TrimSpace(message)); trimmed != "" {
-		messageHTML = `<p class="flash">` + trimmed + `</p>`
-	}
-
-	body := `<!doctype html>
-<html>
-<head>
-  <meta charset="utf-8">
-  <title>Authorize Codex</title>
-  <style>
-    body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; background: #f6f7fb; color: #111827; margin: 0; }
-    .shell { width: min(34rem, calc(100vw - 2rem)); margin: 4rem auto; background: #fff; border: 1px solid #dbe1ea; border-radius: 18px; padding: 1.5rem; box-shadow: 0 18px 48px rgba(17, 24, 39, 0.08); }
-    h1 { margin: 0 0 0.75rem; font-size: 1.45rem; }
-    p { color: #4b5563; line-height: 1.5; }
-    .flash { background: #fff3cd; color: #7c5a00; border: 1px solid #f1d37a; border-radius: 12px; padding: 0.75rem 0.9rem; }
-    .card { background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 14px; padding: 1rem; margin: 1rem 0; }
-    .grid { display: grid; grid-template-columns: 8rem 1fr; gap: 0.6rem 1rem; }
-    ul { margin: 0.6rem 0 0; padding-left: 1.2rem; }
-    code { background: #eef2ff; padding: 0.15rem 0.35rem; border-radius: 6px; }
-    .actions { display: flex; gap: 0.75rem; margin-top: 1.25rem; }
-    button { border: 0; border-radius: 12px; padding: 0.85rem 1rem; font: inherit; cursor: pointer; }
-    .cancel { background: #e5e7eb; color: #111827; }
-    .confirm { background: #111827; color: #fff; }
-  </style>
-</head>
-<body>
-  <div class="shell">
-    <h1>Authorize Codex</h1>
-    <p>Review the signed-in account, then confirm or cancel this authorization request.</p>
-    ` + messageHTML + `
-    <div class="card">
-      <div class="grid">
-        <div>Username</div><div>` + template.HTMLEscapeString(user.Username) + `</div>
-        <div>Display name</div><div>` + template.HTMLEscapeString(displayName) + `</div>
-        <div>Email</div><div>` + template.HTMLEscapeString(email) + `</div>
-        <div>Client ID</div><div><code>` + template.HTMLEscapeString(firstNonEmpty(c.Query("client_id"), c.PostForm("client_id"))) + `</code></div>
-      </div>
-      <div style="margin-top: 0.9rem;">
-        <div>Requested scopes</div>
-        <ul>` + strings.Join(scopeRows, "") + `</ul>
-      </div>
-    </div>
-    <form method="post" action="/oauth/authorize">
-      <input type="hidden" name="redirect_uri" value="` + template.HTMLEscapeString(firstNonEmpty(c.Query("redirect_uri"), c.PostForm("redirect_uri"))) + `" />
-      <input type="hidden" name="state" value="` + template.HTMLEscapeString(firstNonEmpty(c.Query("state"), c.PostForm("state"))) + `" />
-      <input type="hidden" name="client_id" value="` + template.HTMLEscapeString(firstNonEmpty(c.Query("client_id"), c.PostForm("client_id"))) + `" />
-      <input type="hidden" name="scope" value="` + template.HTMLEscapeString(firstNonEmpty(c.Query("scope"), c.PostForm("scope"))) + `" />
-      <input type="hidden" name="code_challenge" value="` + template.HTMLEscapeString(firstNonEmpty(c.Query("code_challenge"), c.PostForm("code_challenge"))) + `" />
-      <div class="actions">
-        <button class="cancel" type="submit" name="action" value="cancel">Cancel</button>
-        <button class="confirm" type="submit" name="action" value="approve">Confirm</button>
-      </div>
-    </form>
-  </div>
-</body>
-</html>`
-	c.Data(http.StatusOK, "text/html; charset=utf-8", []byte(body))
-}
-
-func renderCodexIssuerDevicePage(c *gin.Context, message string) {
-	rows := make([]string, 0)
-	for _, record := range service.ListCodexDeviceCodes() {
-		status := "no"
-		if record.Approved {
-			status = "yes"
-		}
-		rows = append(rows, "<tr><td><code>"+
-			template.HTMLEscapeString(record.UserCode)+
-			"</code></td><td>"+status+
-			"</td><td>"+strconv.Itoa(record.Polls)+
-			"</td></tr>")
-	}
-	tableRows := strings.Join(rows, "")
-	if tableRows == "" {
-		tableRows = "<tr><td colspan='3'>No active device codes yet.</td></tr>"
-	}
-	messageHTML := ""
-	if trimmed := template.HTMLEscapeString(strings.TrimSpace(message)); trimmed != "" {
-		messageHTML = "<p class='flash'><strong>" + trimmed + "</strong></p>"
-	}
-
-	body := `<!doctype html>
-<html>
-<head>
-  <meta charset="utf-8">
-  <title>Codex Device Auth</title>
-  <style>
-    body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; margin: 2rem auto; max-width: 48rem; padding: 0 1rem; color: #111827; }
-    code { background: #f4f4f5; padding: 0.2rem 0.35rem; border-radius: 6px; }
-    table { border-collapse: collapse; width: 100%; margin-top: 1rem; }
-    td, th { border: 1px solid #d1d5db; padding: 0.65rem; text-align: left; }
-    form { display: flex; gap: 0.75rem; margin-top: 1rem; }
-    input { flex: 1; padding: 0.75rem 0.85rem; border: 1px solid #cbd5e1; border-radius: 12px; }
-    button { padding: 0.75rem 1rem; border: 0; border-radius: 12px; background: #111827; color: #fff; cursor: pointer; }
-    .flash { background: #ecfccb; border: 1px solid #bef264; color: #365314; border-radius: 12px; padding: 0.8rem 0.9rem; }
-  </style>
-</head>
-<body>
-  <h1>Codex Device Auth</h1>
-  <p>Open this page after the CLI prints a user code, then approve it here.</p>
-  ` + messageHTML + `
-  <form method="post" action="/codex/device">
-    <input name="user_code" placeholder="Enter the printed user code" />
-    <button type="submit">Approve</button>
-  </form>
-  <table>
-    <thead>
-      <tr><th>User code</th><th>Approved</th><th>Polls</th></tr>
-    </thead>
-    <tbody>` + tableRows + `</tbody>
-  </table>
-</body>
-</html>`
-	c.Data(http.StatusOK, "text/html; charset=utf-8", []byte(body))
 }
 
 func normalizeCodexIssuerContinueTo(continueTo string, defaultPath string) string {
