@@ -273,3 +273,111 @@ func TestGetTokenKeyRequiresOwnershipAndReturnsFullKey(t *testing.T) {
 		t.Fatalf("unauthorized key response leaked raw token key: %s", unauthorizedRecorder.Body.String())
 	}
 }
+
+func TestAddTokenNormalizesOptionalBillingPreference(t *testing.T) {
+	db := setupTokenControllerTestDB(t)
+
+	tests := []struct {
+		name  string
+		input string
+		want  string
+	}{
+		{
+			name:  "empty follows user setting",
+			input: "",
+			want:  "",
+		},
+		{
+			name:  "valid value preserved",
+			input: "wallet_only",
+			want:  "wallet_only",
+		},
+		{
+			name:  "invalid value cleared",
+			input: "invalid_preference",
+			want:  "",
+		},
+	}
+
+	for idx, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			body := map[string]any{
+				"name":                 fmt.Sprintf("token-%d", idx),
+				"expired_time":         -1,
+				"remain_quota":         100,
+				"unlimited_quota":      true,
+				"model_limits_enabled": false,
+				"model_limits":         "",
+				"group":                "default",
+				"cross_group_retry":    false,
+				"billing_preference":   tt.input,
+			}
+
+			ctx, recorder := newAuthenticatedContext(t, http.MethodPost, "/api/token/", body, 1)
+			AddToken(ctx)
+
+			response := decodeAPIResponse(t, recorder)
+			if !response.Success {
+				t.Fatalf("expected add token to succeed, got message: %s", response.Message)
+			}
+
+			var created model.Token
+			if err := db.Where("user_id = ? AND name = ?", 1, body["name"]).First(&created).Error; err != nil {
+				t.Fatalf("failed to load created token: %v", err)
+			}
+			if created.BillingPreference != tt.want {
+				t.Fatalf("expected billing preference %q, got %q", tt.want, created.BillingPreference)
+			}
+		})
+	}
+}
+
+func TestUpdateTokenNormalizesOptionalBillingPreference(t *testing.T) {
+	db := setupTokenControllerTestDB(t)
+	token := seedToken(t, db, 1, "billing-token", "bill1234token5678")
+
+	updateBody := map[string]any{
+		"id":                   token.Id,
+		"name":                 token.Name,
+		"expired_time":         -1,
+		"remain_quota":         100,
+		"unlimited_quota":      true,
+		"model_limits_enabled": false,
+		"model_limits":         "",
+		"group":                "default",
+		"cross_group_retry":    false,
+		"billing_preference":   "wallet_first",
+	}
+
+	ctx, recorder := newAuthenticatedContext(t, http.MethodPut, "/api/token/", updateBody, 1)
+	UpdateToken(ctx)
+
+	response := decodeAPIResponse(t, recorder)
+	if !response.Success {
+		t.Fatalf("expected valid billing preference update to succeed, got message: %s", response.Message)
+	}
+
+	var updated model.Token
+	if err := db.First(&updated, token.Id).Error; err != nil {
+		t.Fatalf("failed to load updated token: %v", err)
+	}
+	if updated.BillingPreference != "wallet_first" {
+		t.Fatalf("expected billing preference %q, got %q", "wallet_first", updated.BillingPreference)
+	}
+
+	updateBody["billing_preference"] = "not_valid"
+	ctx, recorder = newAuthenticatedContext(t, http.MethodPut, "/api/token/", updateBody, 1)
+	UpdateToken(ctx)
+
+	response = decodeAPIResponse(t, recorder)
+	if !response.Success {
+		t.Fatalf("expected invalid billing preference update to succeed and clear value, got message: %s", response.Message)
+	}
+
+	if err := db.First(&updated, token.Id).Error; err != nil {
+		t.Fatalf("failed to reload token after invalid update: %v", err)
+	}
+	if updated.BillingPreference != "" {
+		t.Fatalf("expected invalid billing preference to be cleared, got %q", updated.BillingPreference)
+	}
+}

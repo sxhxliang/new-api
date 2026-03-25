@@ -116,6 +116,21 @@ func NormalizeBillingPreference(pref string) string {
 	}
 }
 
+// NormalizeOptionalBillingPreference clamps the billing preference to valid values
+// while preserving empty input for "follow current setting" semantics.
+func NormalizeOptionalBillingPreference(pref string) string {
+	pref = strings.TrimSpace(pref)
+	if pref == "" {
+		return ""
+	}
+	switch pref {
+	case "subscription_first", "wallet_first", "subscription_only", "wallet_only":
+		return pref
+	default:
+		return ""
+	}
+}
+
 // MaskEmail masks a user email to prevent PII leakage in logs
 // Returns "***masked***" if email is empty, otherwise shows only the domain part
 func MaskEmail(email string) string {

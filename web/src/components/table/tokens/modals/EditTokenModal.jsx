@@ -74,6 +74,7 @@ const EditTokenModal = (props) => {
     allow_ips: '',
     group: '',
     cross_group_retry: false,
+    billing_preference: '',
     tokenCount: 1,
   });
 
@@ -391,6 +392,23 @@ const EditTokenModal = (props) => {
                       extraText={t(
                         '开启后，当前分组渠道失败时会按顺序尝试下一个分组的渠道',
                       )}
+                    />
+                  </Col>
+                  <Col span={24}>
+                    <Form.Select
+                      field='billing_preference'
+                      label={t('计费方式')}
+                      placeholder={t('跟随用户设置')}
+                      optionList={[
+                        { value: '', label: t('跟随用户设置') },
+                        { value: 'wallet_only', label: t('仅钱包（按量付费）') },
+                        { value: 'subscription_only', label: t('仅订阅套餐') },
+                        { value: 'wallet_first', label: t('钱包优先') },
+                        { value: 'subscription_first', label: t('订阅优先') },
+                      ]}
+                      extraText={t('设置此令牌的计费方式，不选择则跟随用户设置')}
+                      showClear
+                      style={{ width: '100%' }}
                     />
                   </Col>
                   <Col xs={24} sm={24} md={24} lg={10} xl={10}>

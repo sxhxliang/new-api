@@ -9,6 +9,7 @@ import (
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/constant"
+	"github.com/QuantumNous/new-api/dto"
 	"github.com/QuantumNous/new-api/logger"
 	"github.com/QuantumNous/new-api/model"
 	"github.com/QuantumNous/new-api/service"
@@ -341,6 +342,14 @@ func TokenAuth() func(c *gin.Context) {
 		}
 
 		userCache.WriteContext(c)
+
+		// 令牌级计费方式覆盖：如果令牌设置了计费方式，则覆盖用户的计费偏好
+		if billingPreference := common.NormalizeOptionalBillingPreference(token.BillingPreference); billingPreference != "" {
+			if userSetting, ok := common.GetContextKeyType[dto.UserSetting](c, constant.ContextKeyUserSetting); ok {
+				userSetting.BillingPreference = billingPreference
+				common.SetContextKey(c, constant.ContextKeyUserSetting, userSetting)
+			}
+		}
 
 		userGroup := userCache.Group
 		tokenGroup := token.Group
